@@ -6,19 +6,7 @@
 当前版本 **v1.9** ｜ 作者 **Wanan（dsh）** ｜ 许可 **MIT**
 
 ---
-
-## 1. 它解决了什么
-
-PicCatcher / Evo-PicCatcher 那类模块是「全自动抓取」：刷一遍信息流，相册里多出上千张你并不想要的图。
-本模块把口径改成 **手动点选** —— 用户长按哪个控件，就保存那个控件当前显示的那张**原始 Bitmap 对象**。
-
-输出位置：
-
-```
-/sdcard/Pictures/长按取图/<来源包名>/<内容MD5>.png
-```
-
-## 0. 安装与使用（三步）
+## 1. 安装与使用（三步）
 
 1. 安装 `PickPic.apk`，在 **Vector / LSPosed** 里启用模块
 2. **作用域**：**推荐全选**；至少要勾上你想取图的那些 App
@@ -65,6 +53,16 @@ adb shell su -c "/data/adb/lspd/cli scope rm com.dsh.picker com.tencent.mm/0"
 3. 是不是按在纯文字 / 空白处？那里没有图可存，会给一句提示。
 4. 极少数完全自绘的界面取不到，属于已知限制。
 
+## 2. 它解决了什么
+
+PicCatcher / Evo-PicCatcher 那类模块是「全自动抓取」：刷一遍信息流，相册里多出上千张你并不想要的图。
+本模块把口径改成 **手动点选** —— 用户长按哪个控件，就保存那个控件当前显示的那张**原始 Bitmap 对象**。
+
+输出位置：
+
+```
+/sdcard/Pictures/长按取图/<来源包名>/<内容MD5>.png
+```
 ## 3. 实现要点（这是本模块和「截图派」的根本区别）
 
 | 机制 | 做法 | 收益 |
@@ -129,42 +127,65 @@ v1.0 有三处在**猜**：向上爬任意祖先找图（会抓到卡片背景�
 
 > 仍存在"一个点上叠了多张同等重要的图"的情况，那时启发式无能为力 —— 这就是 v1.2 候选面板要解决的。
 
-## 6. 源码结构
+## 7. 源码结构
 
 ```
 picker/
 ├── AndroidManifest.xml          # xposedmodule 元数据 + 说明页 Activity
 ├── assets/xposed_init           # 入口类名
 ├── res/values/strings.xml
+├── LICENSE                      # MIT
+├── PickPic.apk                  # 构建产物（同时也是分发用的安装包）
 ├── stub/                        # 编译期桩（compileOnly，不进 APK）
 │   └── de/robv/android/xposed/{IXposedHookLoadPackage,XC_MethodHook,XposedHelpers,XposedBridge,callbacks/XC_LoadPackage}
 ├── src/com/dsh/picker/
-│   ├── XposedInit.java          # 入口：hook 安装 + 长按判定 + 取图
+│   ├── XposedInit.java          # 入口：hook 安装 + 长按判定 + 决策（native / WebView / 矢量重绘）
 │   ├── CaptureStore.java        # 控件身份 → 位图 的绑定表（LRU）
 │   ├── TouchTracker.java        # 每个控件的按下点
 │   ├── ViewHitTester.java       # 控件树命中测试
-│   ├── ImageSaver.java          # 三级落盘
-│   └── Util.java                # 日志 / Drawable→Bitmap / HARDWARE 回读 / MD5
+│   ├── ImageSaver.java          # 三级落盘（MediaStore → root cp → 直接写）
+│   ├── UrlSaver.java            # 按 URL 取原文件（http / android_asset / android_res / content / data:）
+│   ├── WebGrabber.java          # WebView 取图（hitTest / JS 探针 / 邻近候选）
+│   ├── WebUrlCache.java         # onLoadResource 的 URL 缓存
+│   ├── CandidateDialog.java     # 多候选点选面板
+│   ├── ActivityTracker.java     # 当前 Activity（分享面板与弹窗都挂在它上面）
+│   ├── MainActivity.java        # 说明页
+│   └── Util.java                # 日志 / Drawable→Bitmap / HARDWARE 回读 / MD5 / 系统分享
 └── build.ps1                    # 纯离线构建：aapt2 → javac → d8 → zipalign → apksigner
 ```
 
-## 7. 构建（无需 Gradle / 无需联网）
+## 8. 构建（无需 Gradle / 无需联网）
+
+需要 **Windows + PowerShell 7、JDK 17+、Android SDK（build-tools + platforms）**。
 
 ```powershell
-# 依赖：JDK 21 + Android SDK build-tools 36.0.0 + platform android-36.1
-.\build.ps1
-# 产物：PickPic.apk（约 20KB，已签名）
+pwsh .\build.ps1
+# 产物：仓库根目录的 PickPic.apk（自动签名、自动 zipalign）
 ```
 
-之所以不用 Gradle：本机 Gradle 8.2 不支持 JDK 21，且 Kotlin 插件未缓存，AGP 8.2.1 与 compileSdk 36 也属跨版本组合。手工链全程可控、可复现。
+脚本会自动探测 SDK、最新的 `build-tools`、最新的 `platforms/android-*` 和 JDK，**不用改任何路径**；
+也可以用 `ANDROID_HOME` / `JAVA_HOME` 显式指定。跑起来会先打印探测结果：
 
-## 8. 免责
+```
+SDK : C:\Users\<you>\AppData\Local\Android\Sdk
+BT  : ...\build-tools\37.0.0
+JAR : ...\platforms\android-37.0\android.jar
+JDK : ...\jdk-21
+```
+
+首次构建会在本地生成 `keystore.jks`（口令 `android`），已被 `.gitignore` 排除。
+换机器 / 换 keystore 生成的签名不同，覆盖安装会失败 —— 先卸载旧版再装。
+
+之所以不用 Gradle：本机 Gradle 8.2 不支持 JDK 21，Kotlin 插件未缓存，AGP 8.2.1 与 compileSdk 36
+也属跨版本组合，直接跑不起来。手工链全程可控、可复现，同样源码构建出来的 APK 字节级稳定。
+
+## 9. 免责
 
 仅限在自己设备上保存自己有权保存的内容；不绕过 DRM、不破解付费内容。
 
 ---
 
-## 9. v1.2 变更（2026-11）
+## 10. v1.2 变更（2026-11）
 
 ### ① 剪贴板投递（跨应用流转闭环）
 
@@ -213,7 +234,7 @@ hook `View.draw(Canvas)`（进/出压弹 `ThreadLocal`）+ `Canvas.drawBitmap(..
 
 ---
 
-## 10. v1.2.1 修复（实测反馈驱动）
+## 11. v1.2.1 修复（实测反馈驱动）
 
 ### ① 长按改为「按住到点即触发」，不再等松手
 
@@ -252,7 +273,7 @@ Vector 注入得极早，那时**主 Looper 还没创建**，`getMainLooper()` �
 
 ---
 
-## 11. v1.2.2 修复：「不管点哪里都拿到同一张图」
+## 12. v1.2.2 修复：「不管点哪里都拿到同一张图」
 
 **现象**：在高德地图里，长按任意位置，保存下来的永远是同一张图。
 
@@ -285,7 +306,7 @@ X5 同名接口，或 `Canvas` 抓绘制）。这也印证了之前的判断：*
 
 ---
 
-## 12. v1.3：WebView 支持（三级策略）
+## 13. v1.3：WebView 支持（三级策略）
 
 WebView 里的图**不是 ImageView**，所以前面所有 View 手段都无效。v1.3 按「质量从高到低」三级回落：
 
@@ -311,7 +332,7 @@ WebView 里的图**不是 ImageView**，所以前面所有 View 手段都无效�
 
 ---
 
-## 13. v1.4：学 PicCatcher 的 `onLoadResource` 思路
+## 14. v1.4：学 PicCatcher 的 `onLoadResource` 思路
 
 参考 PicCatcher 的 `WebViewCatcherPlugin` / `X5WebViewCatcherPlugin`：**不钩坐标、不钩 JS、不渲染**，
 而是钩 `WebViewClient.onLoadResource(webView, url)` —— 页面每加载一个资源都会回调，
@@ -365,7 +386,7 @@ XposedHelpers.findAndHookMethod(ClassLoader.class, "loadClass", String.class, ho
 
 ---
 
-## 14. v1.5：修「点了小图标却存了整屏」
+## 15. v1.5：修「点了小图标却存了整屏」
 
 ### ① 不再把"整页渲染"当成功保存
 
@@ -401,7 +422,7 @@ JS 那一步就能命中。
 
 ---
 
-## 15. v1.6：WebView 原图链路真正打通 + 去掉「整屏假成功」
+## 16. v1.6：WebView 原图链路真正打通 + 去掉「整屏假成功」
 
 ### 决定性证据
 

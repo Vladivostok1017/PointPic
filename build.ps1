@@ -1,17 +1,71 @@
 $ErrorActionPreference = 'Stop'
 
-$ROOT = "C:\Users\Administrator\Downloads\20261103\picker"
-$SDK  = "C:\Users\Administrator\AppData\Local\Android\Sdk"
-$BT   = Join-Path $SDK "build-tools\36.0.0"
-$JAR  = Join-Path $SDK "platforms\android-36.1\android.jar"
-$OUT  = Join-Path $ROOT "build"
-$KS   = Join-Path $ROOT "keystore.jks"
-$APK  = Join-Path $ROOT "PickPic.apk"
+# ── 路径全部自动探测，不写死任何本机目录 ──────────────────────────────
+$ROOT = $PSScriptRoot
 
-$env:JAVA_HOME = "C:\Users\Administrator\AppData\Local\Programs\Eclipse Adoptium\jdk-21.0.8.9-hotspot"
-$JAVAC = Join-Path $env:JAVA_HOME "bin\javac.exe"
-$JARTOOL = Join-Path $env:JAVA_HOME "bin\jar.exe"
-$KEYTOOL = Join-Path $env:JAVA_HOME "bin\keytool.exe"
+function Resolve-Sdk {
+    $cands = @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT,
+        (Join-Path $env:LOCALAPPDATA 'Android\Sdk'),
+        (Join-Path $env:USERPROFILE 'AppData\Local\Android\Sdk'))
+    foreach ($c in $cands) {
+        if ($c -and (Test-Path (Join-Path $c 'build-tools'))) { return $c }
+    }
+    throw "找不到 Android SDK（需要 build-tools 与 platforms）。请设置环境变量 ANDROID_HOME。"
+}
+$SDK = Resolve-Sdk
+
+function Get-NewestDir($dir) {
+    if (-not (Test-Path $dir)) { return $null }
+    return (Get-ChildItem $dir -Directory | Sort-Object Name -Descending | Select-Object -First 1)
+}
+
+$btDir = Get-NewestDir (Join-Path $SDK 'build-tools')
+if (-not $btDir) { throw "build-tools 为空：$SDK\build-tools" }
+$BT = $btDir.FullName
+
+# android.jar：取版本号最大的 platforms/android-*
+$JAR = $null
+$platDir = Join-Path $SDK 'platforms'
+if (Test-Path $platDir) {
+    foreach ($d in (Get-ChildItem $platDir -Directory | Sort-Object Name -Descending)) {
+        $cand = Join-Path $d.FullName 'android.jar'
+        if (Test-Path $cand) { $JAR = $cand; break }
+    }
+}
+if (-not $JAR) { throw "找不到 platforms/android-*/android.jar" }
+
+# JDK：优先 JAVA_HOME，其次常见安装位置
+function Resolve-Jdk {
+    if ($env:JAVA_HOME -and (Test-Path (Join-Path $env:JAVA_HOME 'bin\javac.exe'))) {
+        return $env:JAVA_HOME
+    }
+    $roots = @(
+        (Join-Path $env:LOCALAPPDATA 'Programs\Eclipse Adoptium'),
+        'C:\Program Files\Eclipse Adoptium',
+        'C:\Program Files\Java',
+        'C:\Program Files\Microsoft'
+    )
+    foreach ($r in $roots) {
+        if (-not (Test-Path $r)) { continue }
+        $d = Get-ChildItem $r -Directory -ErrorAction SilentlyContinue |
+        Sort-Object Name -Descending | Select-Object -First 1
+        if ($d -and (Test-Path (Join-Path $d.FullName 'bin\javac.exe'))) { return $d.FullName }
+    }
+    throw "找不到 JDK（需要 javac / jar / keytool）。请设置 JAVA_HOME 指向 JDK 目录。"
+}
+$env:JAVA_HOME = Resolve-Jdk
+$JAVAC = Join-Path $env:JAVA_HOME 'bin\javac.exe'
+$JARTOOL = Join-Path $env:JAVA_HOME 'bin\jar.exe'
+$KEYTOOL = Join-Path $env:JAVA_HOME 'bin\keytool.exe'
+
+$OUT = Join-Path $ROOT "build"
+$KS = Join-Path $ROOT "keystore.jks"
+$APK = Join-Path $ROOT "PickPic.apk"
+
+Write-Host "SDK : $SDK"
+Write-Host "BT  : $BT"
+Write-Host "JAR : $JAR"
+Write-Host "JDK : $env:JAVA_HOME"
 
 Write-Host "== 0. 清理 ==" -ForegroundColor Cyan
 if (Test-Path $OUT) { Remove-Item $OUT -Recurse -Force }
@@ -60,7 +114,7 @@ if ($LASTEXITCODE -ne 0) { throw "zipalign failed" }
 Write-Host "== 8. keystore ==" -ForegroundColor Cyan
 if (-not (Test-Path $KS)) {
     $ktlog = Join-Path $OUT "keytool.log"
-    cmd /c "`"$KEYTOOL`" -genkeypair -keystore `"$KS`" -alias pickpic -keyalg RSA -keysize 2048 -validity 36500 -storepass android -keypass android -dname `"CN=PickPic, OU=DSH, O=DSH, L=NA, S=NA, C=CN`" > `"$ktlog`" 2>&1"
+    cmd /c "`"$KEYTOOL`" -genkeypair -keystore `"$KS`" -alias pickpic -keyalg RSA -keysize 2048 -validity 36500 -storepass android -keypass android -dname `"CN=PickPic, O=Wanan (dsh), C=CN`" > `"$ktlog`" 2>&1"
     if (Test-Path $ktlog) { Get-Content $ktlog | Select-Object -Last 3 }
 }
 if (-not (Test-Path $KS)) { throw "keystore not created" }
