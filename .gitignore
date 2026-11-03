@@ -1,0 +1,18 @@
+# 构建产物
+build/
+*.iml
+.gradle/
+
+# 签名密钥 —— 绝不能进仓库
+keystore.jks
+*.jks
+*.keystore
+
+# 系统垃圾
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# 本地诊断残留
+_diag/
+*.log
