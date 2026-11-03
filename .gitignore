@@ -2,6 +2,8 @@
 build/
 *.iml
 .gradle/
+# apksigner 的签名中间件，每次构建都重新生成，不该进仓库
+*.idsig
 
 # 签名密钥 —— 绝不能进仓库
 keystore.jks

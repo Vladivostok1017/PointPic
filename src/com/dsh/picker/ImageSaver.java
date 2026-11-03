@@ -31,8 +31,12 @@ public final class ImageSaver {
         saveAsync(ctx, bitmap, sourcePkg, true);
     }
 
+    /**
+     * @param share 存好之后是否立刻唤起系统分享面板（现在默认就是这条路）。
+     *              剪贴板那条已经不用了 —— 绝大多数 App 不读剪贴板里的图片。
+     */
     public static void saveAsync(final Context ctx, final Bitmap bitmap,
-                                 final String sourcePkg, final boolean alsoClipboard) {
+                                 final String sourcePkg, final boolean share) {
         if (ctx == null || bitmap == null) {
             return;
         }
@@ -41,7 +45,7 @@ public final class ImageSaver {
             @Override
             public void run() {
                 try {
-                    doSave(app, bitmap, sourcePkg, alsoClipboard);
+                    doSave(app, bitmap, sourcePkg, share);
                 } catch (Throwable t) {
                     Util.log("save err: " + t);
                     Util.toast(app, "保存失败: " + t.getClass().getSimpleName());
@@ -51,7 +55,7 @@ public final class ImageSaver {
     }
 
     private static void doSave(Context ctx, Bitmap bitmap, String sourcePkg,
-                               boolean alsoClipboard) throws Exception {
+                               boolean share) throws Exception {
         Bitmap src = Util.toSoftware(bitmap);
         if (src == null || src.isRecycled()) {
             Util.toast(ctx, "图片已失效，请重试");
@@ -75,13 +79,12 @@ public final class ImageSaver {
 
         Uri uri = saveViaMediaStore(ctx, data, name, sub);
         if (uri != null) {
-            boolean clip = false;
-            if (alsoClipboard) {
-                clip = Util.copyToClipboard(ctx, uri);
-                Util.log("clipboard=" + clip + " uri=" + uri);
-            }
             Util.toast(ctx, "已保存 " + src.getWidth() + "×" + src.getHeight()
-                    + (clip ? "，已复制到剪贴板" : "") + " → 相册/长按取图/" + sub);
+                    + " → 相册/长按取图/" + sub);
+            if (share) {
+                Util.shareImage(ctx, uri, "image/png");
+            }
+            Util.log("saved uri=" + uri + " share=" + share);
             return;
         }
         if (saveViaRoot(ctx, data, name, sub)) {

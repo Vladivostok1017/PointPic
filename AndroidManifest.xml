@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
     package="com.dsh.picker"
-    android:versionCode="1"
-    android:versionName="1.0">
+    android:versionCode="9"
+    android:versionName="1.9">
 
     <uses-sdk
         android:minSdkVersion="29"
@@ -18,7 +18,7 @@
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="长按任意图片直接保存原始位图（不截图、不裁剪）" />
+            android:value="长按即取图：把指尖下的图片/控件存成图片文件并调起系统分享。记得先在作用域里勾选目标 App（推荐全选），勾完强停 App 再打开。作者 Wanan（dsh）" />
         <meta-data
             android:name="xposedminversion"
             android:value="93" />

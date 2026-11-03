@@ -76,6 +76,27 @@ public class XposedInit implements IXposedHookLoadPackage {
     /** 最近一次由定时器路径处理完手势的时刻；兜底路径在此之后 1.5s 内不再插手。 */
     private static long lastGestureHandledAt;
 
+    // ---------- v1.8：Window 级输入钩子 ----------
+    /**
+     * 一旦 Window 级钩子装上，它就是**唯一**的触摸来源。
+     * View.dispatchTouchEvent 与 performLongClick 两条老路径必须让位，
+     * 否则同一次手势会被处理两遍（存两张图）。
+     */
+    private static volatile boolean INPUT_HOOKED;
+
+    /** 本次手势的 downTime，用来判断「要吞的是不是我们自己抓过的那一次」的 UP。 */
+    private static long firedDownTime = -1;
+
+    /** 屏幕坐标的按下点，只用于位移判定。 */
+    private static float rawDownX, rawDownY;
+
+    /** 当前手势的 downTime（MotionEvent.getDownTime()），用于吞 UP 时精确匹配。 */
+    private static long downEventTime = -1;
+
+    /** 诊断：窗口级 DOWN 日志节流 + mView 取失败只报一次。 */
+    private static long lastWinDownLog;
+    private static boolean mViewFailLogged;
+
     /** 到点即触发：此时手指仍按在屏幕上，提示会立刻出现，符合「长按出结果」的直觉。 */
     private static final Runnable LONG_PRESS_RUNNABLE = new Runnable() {
         @Override
@@ -85,7 +106,12 @@ public class XposedInit implements IXposedHookLoadPackage {
                     return;
                 }
                 longPressFired = true;
-                lastGestureHandledAt = SystemClock.uptimeMillis();
+                // 注意：这里**不能**再写 lastGestureHandledAt。
+                // triggerAt() 自己的第一条守卫就是 `now - lastGestureHandledAt < 500 → return`，
+                // 先置位等于把自己挡在门外（v1.7 之前定时器路径一直没生效、全靠
+                // performLongClick 兜底在跑，就是这个原因）。由 triggerAt 自己置位即可。
+                // 记下这次手势，供 processPointerEvent 精确吞掉它的 UP
+                firedDownTime = downEventTime;
                 triggerAt(downRoot, downX, downY);
             } catch (Throwable t) {
                 Util.log("longPress runnable: " + t);
@@ -131,6 +157,9 @@ public class XposedInit implements IXposedHookLoadPackage {
         hookBitmapFactory();
         hookActivity();
         hookDrawContext();
+        hookWebResources(lp.classLoader);
+        // 放在最后：它一旦成功，上面 hookTouch/hookLongClickFallback 就自动让位
+        installWindowInputHook(lp.classLoader);
 
         Util.log("init done for " + lp.packageName);
     }
@@ -163,6 +192,12 @@ public class XposedInit implements IXposedHookLoadPackage {
         // 记录每个控件自己的按下点（供命中测试用）
         if (action == MotionEvent.ACTION_DOWN) {
             TouchTracker.onTouch(v, ev);
+        }
+
+        // Window 级钩子已经在更上游接管了长按判定：这里必须让位，
+        // 否则同一次手势会跑两遍定时器 → 存两张图。
+        if (INPUT_HOOKED) {
+            return;
         }
 
         long now = SystemClock.uptimeMillis();
@@ -198,6 +233,188 @@ public class XposedInit implements IXposedHookLoadPackage {
             downAt = 0;
             downRoot = null;
         }
+    }
+
+    // ---------- 1b. Window 级输入钩子（救「整条 dispatchTouchEvent 被覆写」的页面） ----------
+    //
+    // 为什么必须下沉：View.dispatchTouchEvent 只是基类方法。宿主任何一层
+    //   · 覆写后 return true 不调 super
+    //   · 或自己做命中测试、直接 child.onTouchEvent(ev)
+    // 都会让基类钩子一次都不执行（小米商城某些页面：日志里连 decide 都没有）。
+    //
+    // 但 App 可以选择不把事件交给自己的 View，**不能不把事件交给系统**。
+    // ViewRootImpl 在 App 代码之前，且每个窗口恒有，是最稳的一层。
+    private static void installWindowInputHook(ClassLoader cl) {
+        if (INPUT_HOOKED) {
+            return;
+        }
+        // ① 首选 ViewRootImpl.enqueueInputEvent(InputEvent, InputEventReceiver, int, boolean)
+        //    覆盖本进程所有窗口（Activity / Dialog / PopupWindow），与根 View 是什么类无关
+        try {
+            Class<?> vr = XposedHelpers.findClass("android.view.ViewRootImpl", cl);
+            // InputEventReceiver 是 @hide，android.jar 里没有，只能按名字取
+            Class<?> ieCls = XposedHelpers.findClass("android.view.InputEvent", cl);
+            Class<?> ierCls = XposedHelpers.findClass("android.view.InputEventReceiver", cl);
+            XposedHelpers.findAndHookMethod(vr, "enqueueInputEvent",
+                    ieCls,
+                    ierCls,
+                    int.class,
+                    boolean.class,
+                    new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            try {
+                                Object ev = param.args[0];
+                                if (!(ev instanceof MotionEvent)) {
+                                    return;     // KeyEvent 不关心
+                                }
+                                // mView = 这一窗的根 View（DecorView / PopupDecorView / 任意实现）
+                                View root = null;
+                                try {
+                                    root = (View) XposedHelpers.getObjectField(
+                                            param.thisObject, "mView");
+                                } catch (Throwable t) {
+                                    if (!mViewFailLogged) {
+                                        mViewFailLogged = true;
+                                        Util.log("mView lookup FAIL: " + t);
+                                    }
+                                }
+                                handleWindowTouch(root, (MotionEvent) ev);
+                            } catch (Throwable ignore) {
+                            }
+                        }
+                    });
+            INPUT_HOOKED = true;
+            Util.log("hook ViewRootImpl.enqueueInputEvent ok (window-level)");
+            return;
+        } catch (Throwable t) {
+            Util.log("enqueueInputEvent FAIL: " + t);
+        }
+        // ② 次选 WindowInputEventReceiver.onInputEvent（入队最早的点）
+        try {
+            Class<?> wer = XposedHelpers.findClass(
+                    "android.view.ViewRootImpl$WindowInputEventReceiver", cl);
+            Class<?> ieCls2 = XposedHelpers.findClass("android.view.InputEvent", cl);
+            XposedHelpers.findAndHookMethod(wer, "onInputEvent",
+                    ieCls2, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            try {
+                                Object ev = param.args[0];
+                                if (!(ev instanceof MotionEvent)) {
+                                    return;
+                                }
+                                Object vr = XposedHelpers.getObjectField(
+                                        param.thisObject, "this$0");
+                                View root = (View) XposedHelpers.getObjectField(vr, "mView");
+                                handleWindowTouch(root, (MotionEvent) ev);
+                            } catch (Throwable ignore) {
+                            }
+                        }
+                    });
+            INPUT_HOOKED = true;
+            Util.log("hook WindowInputEventReceiver.onInputEvent ok");
+            return;
+        } catch (Throwable t) {
+            Util.log("onInputEvent FAIL: " + t);
+        }
+        // ③ 末选 DecorView.dispatchTouchEvent（漏 PopupWindow，但比没有好）
+        try {
+            Class<?> decor = XposedHelpers.findClass(
+                    "com.android.internal.policy.DecorView", cl);
+            XposedHelpers.findAndHookMethod(decor, "dispatchTouchEvent",
+                    MotionEvent.class, new XC_MethodHook() {
+                        @Override
+                        protected void beforeHookedMethod(MethodHookParam param) {
+                            try {
+                                handleWindowTouch((View) param.thisObject,
+                                        (MotionEvent) param.args[0]);
+                            } catch (Throwable ignore) {
+                            }
+                        }
+                    });
+            INPUT_HOOKED = true;
+            Util.log("hook DecorView.dispatchTouchEvent ok");
+        } catch (Throwable t) {
+            Util.log("DecorView FAIL: " + t);
+        }
+    }
+
+    /**
+     * 解析 Window 级触摸。这里是**屏幕坐标**（事件到达 ViewRootImpl 时
+     * xOffset/yOffset 已经加好），所以先换算成根 View 的本地坐标再交给 triggerAt。
+     */
+    private static void handleWindowTouch(View root, MotionEvent ev) {
+        if (root == null || ev == null) {
+            return;
+        }
+        int action = ev.getActionMasked();
+        float rx = ev.getRawX();
+        float ry = ev.getRawY();
+
+        if (action == MotionEvent.ACTION_DOWN) {
+            // 诊断：证明窗口级钩子真的收到了事件（每个 DOWN 只打一行）
+            long tn = SystemClock.uptimeMillis();
+            if (tn - lastWinDownLog > 1500) {
+                lastWinDownLog = tn;
+                Util.log("win DOWN raw=" + (int) rx + "," + (int) ry
+                        + " root=" + (root == null ? "null" : root.getClass().getName()));
+            }
+            // 同一个 DOWN 可能被重排队（输入法调整窗口等），别把计时器重启
+            if (downAt != 0 && ev.getDownTime() == downEventTime) {
+                return;
+            }
+            int[] loc = new int[2];
+            root.getLocationOnScreen(loc);
+            downAt = SystemClock.uptimeMillis();
+            downRoot = root;
+            downX = rx - loc[0];        // triggerAt 要的是根 View 本地坐标
+            downY = ry - loc[1];
+            rawDownX = rx;
+            rawDownY = ry;
+            downEventTime = ev.getDownTime();
+            longPressFired = false;
+            handler().removeCallbacks(LONG_PRESS_RUNNABLE);
+            handler().postDelayed(LONG_PRESS_RUNNABLE, LONG_PRESS_MS);
+        } else if (action == MotionEvent.ACTION_MOVE) {
+            if (downAt != 0
+                    && (Math.abs(rx - rawDownX) > MAX_MOVE_PX
+                    || Math.abs(ry - rawDownY) > MAX_MOVE_PX)) {
+                long tn = SystemClock.uptimeMillis();
+                if (tn - lastWinDownLog > 800) {
+                    lastWinDownLog = tn;
+                    Util.log("win cancel by MOVE dx=" + (int) (rx - rawDownX)
+                            + " dy=" + (int) (ry - rawDownY));
+                }
+                cancelPendingLongPress();
+            }
+        } else {
+            // UP / CANCEL：
+            //  ① 定时器没来得及跑（主线程被阻塞，DOWN..UP 挤在同一批里处理）时，
+            //     这里按「实际按住时长」补判一次 —— 否则用户明明按够了，却是空手。
+            //  ② 否则只收尾。
+            long held = downAt == 0 ? 0 : SystemClock.uptimeMillis() - downAt;
+            if (downAt != 0 && !longPressFired && held >= LONG_PRESS_MS) {
+                handler().removeCallbacks(LONG_PRESS_RUNNABLE);
+                longPressFired = true;
+                firedDownTime = downEventTime;
+                View r = downRoot;
+                float lx = downX;
+                float ly = downY;
+                downAt = 0;
+                downRoot = null;
+                Util.log("long press settled on UP held=" + held + "ms");
+                triggerAt(r, lx, ly);
+                return;
+            }
+            cancelPendingLongPress();
+        }
+    }
+
+    private static void cancelPendingLongPress() {
+        handler().removeCallbacks(LONG_PRESS_RUNNABLE);
+        downAt = 0;
+        downRoot = null;
     }
 
     // ---------- 2. View 锚点：记下「这个控件显示了这张图」 ----------
@@ -327,7 +544,119 @@ public class XposedInit implements IXposedHookLoadPackage {
         };
     }
 
-    // ---------- 5. 兜底：宿主自己走 performLongClick 的情况 ----------
+    // ---------- 5. WebView 资源钩子：拿到页面加载过的图片原始 URL ----------
+
+    /**
+     * 钩 `WebViewClient.onLoadResource(webView, url)` —— 页面每加载一个资源都会回调。
+     * 原生内核与腾讯 X5（高德/小米商城用）各一套，X5 的类不同包，用 findClassIfExists 拿。
+     */
+    private static void hookWebResources(ClassLoader cl) {
+        try {
+            XposedHelpers.findAndHookMethod(android.webkit.WebViewClient.class,
+                    "onLoadResource", android.webkit.WebView.class, String.class,
+                    resourceHook());
+            Util.log("hook onLoadResource(stock) ok");
+        } catch (Throwable t) {
+            Util.log("hook onLoadResource(stock) FAIL: " + t);
+        }
+        try {
+            Class<?> client = XposedHelpers.findClassIfExists(
+                    "com.tencent.smtt.sdk.WebViewClient", cl);
+            Class<?> webView = XposedHelpers.findClassIfExists(
+                    "com.tencent.smtt.sdk.WebView", cl);
+            if (client != null && webView != null) {
+                XposedHelpers.findAndHookMethod(client, "onLoadResource",
+                        webView, String.class, resourceHook());
+                Util.log("hook onLoadResource(x5) ok");
+            } else {
+                // X5（TBS）的类是运行时从独立 dex 动态加载的，此刻还不存在
+                Util.log("x5 classes absent -> 安装延迟钩子");
+                hookX5Lazy();
+            }
+        } catch (Throwable t) {
+            Util.log("hook onLoadResource(x5) FAIL: " + t);
+        }
+    }
+
+    /**
+     * 腾讯 X5（TBS）的类由它自己的 ClassLoader 在运行时加载，
+     * 所以只能盯着 ClassLoader.loadClass：名字一出现就挂 onLoadResource。
+     */
+    private static void hookX5Lazy() {
+        try {
+            XposedHelpers.findAndHookMethod(ClassLoader.class, "loadClass",
+                    String.class, new XC_MethodHook() {
+                        @Override
+                        protected void afterHookedMethod(MethodHookParam param) {
+                            try {
+                                Object n = param.args[0];
+                                if (!(n instanceof String)) {
+                                    return;
+                                }
+                                String name = (String) n;
+                                if (!name.startsWith("com.tencent.smtt.sdk.WebViewClient")) {
+                                    return;
+                                }
+                                Object r = param.getResult();
+                                if (r instanceof Class) {
+                                    installX5Hook((Class<?>) r);
+                                }
+                            } catch (Throwable ignore) {
+                            }
+                        }
+                    });
+            Util.log("hook ClassLoader.loadClass ok");
+        } catch (Throwable t) {
+            Util.log("hook loadClass FAIL: " + t);
+        }
+    }
+
+    private static final java.util.HashSet<String> X5_HOOKED = new java.util.HashSet<String>();
+
+    private static void installX5Hook(Class<?> clientCls) {
+        try {
+            String key = clientCls.getName();
+            synchronized (X5_HOOKED) {
+                if (X5_HOOKED.contains(key)) {
+                    return;
+                }
+                X5_HOOKED.add(key);
+            }
+            ClassLoader cl = clientCls.getClassLoader();
+            Class<?> wv = null;
+            try {
+                wv = Class.forName("com.tencent.smtt.sdk.WebView", false, cl);
+            } catch (Throwable ignore) {
+            }
+            if (wv == null) {
+                Util.log("x5 client found but WebView class missing");
+                return;
+            }
+            XposedHelpers.findAndHookMethod(clientCls, "onLoadResource",
+                    wv, String.class, resourceHook());
+            Util.log("hook onLoadResource(x5-lazy) ok: " + key);
+        } catch (Throwable t) {
+            Util.log("installX5Hook FAIL: " + t);
+        }
+    }
+
+    private static XC_MethodHook resourceHook() {
+        return new XC_MethodHook() {
+            @Override
+            protected void afterHookedMethod(MethodHookParam param) {
+                try {
+                    Object wv = param.args[0];
+                    Object u = param.args[1];
+                    if (wv instanceof View && u instanceof String) {
+                        WebUrlCache.put((View) wv, (String) u);
+                    }
+                } catch (Throwable ignore) {
+                }
+            }
+        };
+    }
+
+    // ---------- 6. 兜底：宿主自己走 performLongClick 的情况 ----------
 
     private static void hookLongClickFallback() {
         try {
@@ -383,7 +712,7 @@ public class XposedInit implements IXposedHookLoadPackage {
             hit = ViewHitTester.deepest(root, x, y);
         } catch (Throwable ignore) {
         }
-        decide(root, sx, sy, hit, "timer");
+        decide(root, sx, sy, hit, INPUT_HOOKED ? "window" : "timer");
     }
 
     /** 两条触发路径（定时器 / performLongClick 兜底）共用同一套判定。 */
@@ -392,9 +721,38 @@ public class XposedInit implements IXposedHookLoadPackage {
         lastSaveAt = now;
         lastGestureHandledAt = now;
         Util.log("decide via=" + via + " point=" + (int) sx + "," + (int) sy
-                + " hit=" + (hit == null ? "null" : hit.getClass().getSimpleName()));
+                + " hit=" + (hit == null ? "null" : hit.getClass().getName()));
 
-        // ---- WebView 优先：能拿到 <img> 的 URL 就存「原始文件」 ----
+        // ---- ① 原生 ImageView 候选优先 ----
+        // 浮在 WebView 之上的原生图标（例如协议页的定位/存储图标）必须走这条，
+        // 否则会被 WebView 分支抢走，最后只能落到"整页渲染"。
+        ArrayList<Bitmap> cands = pickCandidates(root, sx, sy, hit);
+        if (!cands.isEmpty()) {
+            final String from = (hit != null ? hit.getClass().getSimpleName() : "root")
+                    + "@" + (int) sx + "," + (int) sy;
+            final View anchor = hit != null ? hit : root;
+            if (cands.size() == 1) {
+                Util.log("save(view) " + from);
+                doSave(anchor, cands.get(0), from);
+                return;
+            }
+            Activity act = ActivityTracker.current();
+            Util.log("candidates=" + cands.size() + " activity=" + (act != null));
+            if (act == null) {
+                doSave(anchor, cands.get(0), from + " (largest)");
+                return;
+            }
+            final ArrayList<Bitmap> list = cands;
+            CandidateDialog.show(act, list, new CandidateDialog.OnPick() {
+                @Override
+                public void onPick(Bitmap bitmap) {
+                    doSave(anchor, bitmap, from + " (picked)");
+                }
+            });
+            return;
+        }
+
+        // ---- ② 没有 ImageView 才轮到 WebView ----
         View web = null;
         try {
             web = WebGrabber.findWebView(hit != null ? hit : root);
@@ -426,48 +784,72 @@ public class XposedInit implements IXposedHookLoadPackage {
             WebGrabber.requestImageUrlAt(web, lx, ly, new WebGrabber.UrlCallback() {
                 @Override
                 public void onResult(String url) {
-                    if (url != null && wctx != null) {
-                        Util.log("web <img>(js) -> " + url);
+                    // A. JS 精确命中指尖下的图片元素
+                    if (url != null && !url.startsWith("#near|")) {
+                        Util.log("web hit -> " + url);
                         UrlSaver.saveFromUrlAsync(wctx, url, pageUrl, wctx.getPackageName());
                         return;
                     }
-                    // JS 也没找到 → 退化为把 WebView 内容渲染成位图
-                    Bitmap shot = WebGrabber.snapshot(webView);
-                    if (worthSaving(shot)) {
-                        doSave(webView, shot, "webview-snapshot");
-                    } else {
-                        Util.log("web: 无 img URL 且渲染无内容");
+                    // B. 精确命中失败（图标是 CSS background-image、或指尖落在文字的空白处）
+                    //    → 用「离指尖最近的几张图」让用户挑，这比一句提示有用得多
+                    final ArrayList<String> picked = new ArrayList<String>();
+                    if (url != null) {
+                        picked.addAll(WebGrabber.parseList(url));
+                        Util.log("web near=" + picked.size());
                     }
+                    // C. 再退到 onLoadResource 缓存
+                    if (picked.isEmpty()) {
+                        picked.addAll(WebUrlCache.recent(webView, 8));
+                        Util.log("web url-cache=" + picked.size());
+                    }
+                    if (picked.isEmpty()) {
+                        // D. 真的没有图片资源 → 矢量重绘，再不行才提示
+                        snapshotFallback(webView, sx, sy);
+                        return;
+                    }
+                    if (picked.size() == 1) {
+                        UrlSaver.saveFromUrlAsync(wctx, picked.get(0), pageUrl,
+                                wctx.getPackageName());
+                        return;
+                    }
+                    Activity act = ActivityTracker.current();
+                    if (act == null) {
+                        UrlSaver.saveFromUrlAsync(wctx, picked.get(0), pageUrl,
+                                wctx.getPackageName());
+                        return;
+                    }
+                    CandidateDialog.showUrls(act, picked, pageUrl,
+                            new CandidateDialog.OnPickUrl() {
+                                @Override
+                                public void onPickUrl(String u) {
+                                    Util.log("web pick -> " + WebUrlCache.shortUrl(u));
+                                    UrlSaver.saveFromUrlAsync(wctx, u, pageUrl,
+                                            wctx.getPackageName());
+                                }
+
+                                @Override
+                                public void onAbort() {
+                                    snapshotFallback(webView, sx, sy);
+                                }
+                            });
                 }
             });
             return;
         }
 
-        ArrayList<Bitmap> cands = pickCandidates(root, sx, sy, hit);
-        if (cands.isEmpty()) {
-            Util.log("skip: 指尖下没有可确定的图片 (" + (int) sx + "," + (int) sy + ")");
-            return;
-        }
-        final String from = (hit != null ? hit.getClass().getSimpleName() : "root")
-                + "@" + (int) sx + "," + (int) sy;
-        final View anchor = hit != null ? hit : root;
-        if (cands.size() == 1) {
-            doSave(anchor, cands.get(0), from);
-            return;
-        }
-        Activity act = ActivityTracker.current();
-        Util.log("candidates=" + cands.size() + " activity=" + (act != null));
-        if (act == null) {
-            doSave(anchor, cands.get(0), from + " (fallback largest)");
-            return;
-        }
-        final ArrayList<Bitmap> list = cands;
-        CandidateDialog.show(act, list, new CandidateDialog.OnPick() {
-            @Override
-            public void onPick(Bitmap bitmap) {
-                doSave(anchor, bitmap, from + " (picked)");
+        // ---- ③ 不是 WebView 也没有缓存位图：矢量重绘 ----
+        View small = smallestViewAt(root, sx, sy);
+        if (small != null) {
+            Bitmap redraw = renderViewScaled(small, 3);
+            if (worthSaving(redraw)) {
+                Util.log("vector-redraw " + small.getClass().getName()
+                        + " -> " + redraw.getWidth() + "x" + redraw.getHeight());
+                doSave(small, redraw, "vector-redraw(3x)");
+                return;
             }
-        });
+        }
+        Util.log("skip: 指尖下没有可确定的图片 (" + (int) sx + "," + (int) sy + ")");
+        Util.toast(appContext, "这一处没有可保存的图片内容");
     }
 
     /** 由 performLongClick 触发 —— 仅在「定时器路径没有处理过这次手势」时兜底。 */
@@ -475,6 +857,9 @@ public class XposedInit implements IXposedHookLoadPackage {
         if (v == null) {
             return;
         }
+        // 注：Window 级钩子生效时这条兜底也不再关掉。
+        // 它自带「1.5s 内定时器处理过就退出」的互斥，重复触发不会发生；
+        // 留着是为了在 Window 级钩子被 ROM 改签名挡掉的机型上仍有退路。
         long now = SystemClock.uptimeMillis();
         // 定时器路径刚刚处理过这次手势 → 不许兜底再来一遍
         // （否则会拿「控件中心」当按点：高德这种整屏一个 WebView 的 App
@@ -502,6 +887,121 @@ public class XposedInit implements IXposedHookLoadPackage {
         decide(v, sx, sy, v, "fallback");
     }
 
+    // ---------- 矢量重绘通道：解决「图标/矢量图形没有图片文件」 ----------
+
+    /**
+     * 把某个控件**重绘**到一张放大后的 Bitmap。
+     *
+     * 和"截图裁剪"的本质区别：
+     *  - 截图：取屏幕像素，受屏幕分辨率限制，控件形状不规则就废；
+     *  - 重绘：让控件在任意尺寸的画布上重新绘制一次，矢量图形可以超采样，
+     *    得到比屏幕更清晰的图（Path/文字/渐变都不会糊）。
+     *
+     * 必须在主线程调用（触摸回调里天然满足）。
+     */
+    private static Bitmap renderViewScaled(View v, int scale) {
+        if (v == null || scale < 1) {
+            return null;
+        }
+        try {
+            int w = v.getWidth();
+            int h = v.getHeight();
+            if (w <= 0 || h <= 0) {
+                return null;
+            }
+            Bitmap bmp = Bitmap.createBitmap(w * scale, h * scale, Bitmap.Config.ARGB_8888);
+            Canvas c = new Canvas(bmp);
+            c.scale(scale, scale);
+            v.draw(c);
+            if (isBlank(bmp)) {
+                return null;
+            }
+            return bmp;
+        } catch (Throwable t) {
+            Util.log("renderViewScaled: " + t);
+            return null;
+        }
+    }
+
+    /** 全透明就认为没画出东西。 */
+    private static boolean isBlank(Bitmap b) {
+        try {
+            int stepX = Math.max(1, b.getWidth() / 12);
+            int stepY = Math.max(1, b.getHeight() / 12);
+            for (int y = 0; y < b.getHeight(); y += stepY) {
+                for (int x = 0; x < b.getWidth(); x += stepX) {
+                    if ((b.getPixel(x, y) >>> 24) != 0) {
+                        return false;
+                    }
+                }
+            }
+            return true;
+        } catch (Throwable t) {
+            return false;
+        }
+    }
+
+    /** 从窗口根开始，用屏幕坐标找「包含该点、面积最小」的控件（不限类型）。 */
+    private static View smallestViewAt(View anyView, float sx, float sy) {
+        View top = topMost(anyView);
+        View best = null;
+        long bestArea = Long.MAX_VALUE;
+        long screenArea = 0;
+        try {
+            screenArea = (long) top.getWidth() * top.getHeight();
+        } catch (Throwable ignore) {
+        }
+        ArrayList<View> all = new ArrayList<View>(8);
+        collectAllAt(top, sx, sy, all, 0);
+        for (int i = 0; i < all.size(); i++) {
+            View v = all.get(i);
+            Rect r = new Rect();
+            if (!v.getGlobalVisibleRect(r)) {
+                continue;
+            }
+            long area = (long) r.width() * r.height();
+            if (area <= 0) {
+                continue;
+            }
+            // 太小（几个像素）和太大（几乎整屏的容器）都排除
+            if (area < 24 * 24) {
+                continue;
+            }
+            if (screenArea > 0 && area > screenArea * 4 / 10) {
+                continue;
+            }
+            if (v instanceof ViewGroup && ((ViewGroup) v).getChildCount() > 3) {
+                continue;   // 复杂容器重绘没意义
+            }
+            if (area < bestArea) {
+                bestArea = area;
+                best = v;
+            }
+        }
+        return best;
+    }
+
+    private static void collectAllAt(View v, float sx, float sy,
+                                     ArrayList<View> out, int depth) {
+        if (v == null || depth > 24 || out.size() > 24) {
+            return;
+        }
+        if (v.getVisibility() != View.VISIBLE) {
+            return;
+        }
+        Rect r = new Rect();
+        if (!v.getGlobalVisibleRect(r) || !r.contains((int) sx, (int) sy)) {
+            return;
+        }
+        out.add(v);
+        if (v instanceof ViewGroup) {
+            ViewGroup g = (ViewGroup) v;
+            for (int i = 0; i < g.getChildCount(); i++) {
+                collectAllAt(g.getChildAt(i), sx, sy, out, depth + 1);
+            }
+        }
+    }
+
     private static void doSave(View v, Bitmap bmp, String from) {
         Context ctx = v != null && v.getContext() != null ? v.getContext() : appContext;
         if (ctx == null) {
@@ -509,6 +1009,36 @@ public class XposedInit implements IXposedHookLoadPackage {
         }
         Util.log("SAVE " + bmp.getWidth() + "x" + bmp.getHeight() + " from " + from);
         ImageSaver.saveAsync(ctx, bmp, ctx.getPackageName(), true);
+    }
+
+    /**
+     * 所有通道都失败时的最后一招：**矢量重绘**。
+     *
+     * 图标字体、内联 SVG、Path/Canvas 画的图标 —— 它们在页面里没有图片文件，
+     * 但都对应某个真实控件。把这个控件在放大 3 倍的画布上重画一遍，
+     * 就能得到比屏幕更清晰的 PNG（矢量超采样，不是截图裁剪）。
+     *
+     * 再不行才提示用户。
+     */
+    private static void snapshotFallback(View anchor, float sx, float sy) {
+        try {
+            View small = smallestViewAt(anchor, sx, sy);
+            if (small != null) {
+                Bitmap redraw = renderViewScaled(small, 3);
+                if (worthSaving(redraw)) {
+                    Util.log("vector-redraw " + small.getClass().getName()
+                            + " -> " + redraw.getWidth() + "x" + redraw.getHeight());
+                    doSave(small, redraw, "vector-redraw(3x)");
+                    return;
+                }
+                Util.log("vector-redraw blank: " + small.getClass().getName());
+            }
+            Util.log("web: 无 URL 可下，且重绘无内容");
+            Context ctx = anchor != null ? anchor.getContext() : appContext;
+            Util.toast(ctx, "这一处没有可保存的图片内容");
+        } catch (Throwable t) {
+            Util.log("snapshotFallback: " + t);
+        }
     }
 
     /**

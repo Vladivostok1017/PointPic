@@ -52,4 +52,8 @@ public final class XposedHelpers {
     public static Object getStaticObjectField(Class<?> clazz, String fieldName) {
         return null;
     }
+
+    public static int getStaticIntField(Class<?> clazz, String fieldName) {
+        return 0;
+    }
 }

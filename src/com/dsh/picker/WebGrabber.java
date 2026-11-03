@@ -6,6 +6,7 @@ import android.graphics.Picture;
 import android.view.View;
 
 import java.lang.reflect.Method;
+import java.util.ArrayList;
 
 /**
  * WebView（含腾讯 X5 / SafeWebView）取图支持。
@@ -95,17 +96,98 @@ public final class WebGrabber {
                 cb.onResult(null);
                 return;
             }
+            // 关键：不要只用 elementFromPoint（命中的常是文字/容器）。
+            // 直接遍历所有 <img>，用 getBoundingClientRect 判断哪个落在点上，
+            // 取面积最大的那个；再退一步找 CSS 背景图。
             String js = "(function(){"
                     + "try{"
                     + "var vw=" + w + ",vh=" + h + ",lx=" + localX + ",ly=" + localY + ";"
-                    + "var cx=Math.round(lx*((window.innerWidth||vw)/vw));"
-                    + "var cy=Math.round(ly*((window.innerHeight||vh)/vh));"
-                    + "var el=document.elementFromPoint(cx,cy);"
-                    + "var g=0;"
-                    + "while(el&&el.tagName!=='IMG'&&g++<8){el=el.parentElement;}"
-                    + "if(el&&el.tagName==='IMG'){return el.currentSrc||el.src||'';}"
-                    + "return '';"
-                    + "}catch(e){return '';}"
+                    + "var sx=lx*((window.innerWidth||vw)/vw);"
+                    + "var sy=ly*((window.innerHeight||vh)/vh);"
+                    + "var best='',bestArea=0;"
+                    + "var imgs=document.getElementsByTagName('img');"
+                    + "for(var i=0;i<imgs.length;i++){"
+                    + "var r=imgs[i].getBoundingClientRect();"
+                    + "if(sx>=r.left&&sx<=r.right&&sy>=r.top&&sy<=r.bottom){"
+                    + "var a=(r.width||1)*(r.height||1);"
+                    + "if(a>bestArea){bestArea=a;best=imgs[i].currentSrc||imgs[i].src||'';}"
+                    + "}}"
+                    + "if(best){return best;}"
+                    + "var el=document.elementFromPoint(sx,sy);var g=0;"
+                    + "while(el&&g++<8){"
+                    + "if(el.tagName==='IMG'){return el.currentSrc||el.src||'';}"
+                    + "try{var bg=window.getComputedStyle(el).backgroundImage;"
+                    + "if(bg&&bg.indexOf('url(')>=0){"
+                    + "return bg.replace(/^url\\([\"']?/,'').replace(/[\"']?\\)$/,'');}}catch(e2){}"
+                    + "el=el.parentElement;"
+                    + "}"
+                    // ── 精确命中失败：很多图标不是 <img> 而是 CSS background-image
+                    //    （document.images 为 0 也能有图）。按「离指尖的距离」收集，
+                    //    只保留同一行附近的，交给用户挑。
+                    + "var near=[];"
+                    + "try{"
+                    + "var all=document.getElementsByTagName('*');"
+                    + "for(var mi=0;mi<all.length;mi++){"
+                    + "var bu='';"
+                    + "try{"
+                    + "var bgs=''+window.getComputedStyle(all[mi]).backgroundImage;"
+                    + "if(bgs&&bgs.indexOf('url(')>=0){"
+                    + "var mm=bgs.match(/url\\([\"']?([^\"')]+)[\"']?\\)/);"
+                    + "if(mm){bu=mm[1];}"
+                    + "}"
+                    + "}catch(e8){}"
+                    + "if(!bu){continue;}"
+                    + "if(bu.indexOf('data:image')!==0&&"
+                    + "!/\\.(png|jpe?g|gif|webp|bmp|svg|avif)/i.test(bu)){continue;}"
+                    + "if(bu.length>3000){continue;}"
+                    + "var rr=all[mi].getBoundingClientRect();"
+                    + "if(!rr.width&&!rr.height){continue;}"
+                    + "var ddx=Math.max(rr.left-sx,0,sx-rr.right);"
+                    + "var ddy=Math.max(rr.top-sy,0,sy-rr.bottom);"
+                    + "near.push([ddx*ddx+ddy*ddy,bu]);"
+                    + "}}catch(e9){}"
+                    + "near.sort(function(a,b){return a[0]-b[0];});"
+                    + "var bestD=near.length?near[0][0]:0;"
+                    + "var nout=[],seenN={};"
+                    + "for(var q=0;q<near.length&&nout.length<6;q++){"
+                    + "if(near[q][0]>bestD+150*150){continue;}"
+                    + "if(seenN[near[q][1]]){continue;}"
+                    + "seenN[near[q][1]]=1;"
+                    + "nout.push(near[q][1]);"
+                    + "}"
+                    + "if(nout.length){return '#near|'+nout.join('\\n');}"
+                    // 到最后都没有图片资源 → 把「该点上的整叠元素」回报出来
+                    // 注意用 elementsFromPoint：pointer-events:none 的图标会被
+                    // elementFromPoint 跳过，只看到下面那层空 div。
+                    + "var stack=null;"
+                    + "try{stack=document.elementsFromPoint(sx,sy);}catch(e7){}"
+                    + "if(!stack||!stack.length){"
+                    + "var t0=document.elementFromPoint(sx,sy);"
+                    + "stack=t0?[t0]:[];"
+                    + "}"
+                    + "if(!stack.length){return '#none|no-element';}"
+                    + "var d='';"
+                    + "for(var k=0;k<stack.length&&k<4;k++){"
+                    + "var t=stack[k];var one=t.tagName;"
+                    + "try{one+='.'+((''+t.className).slice(0,30));}catch(e3){}"
+                    + "try{var cs=window.getComputedStyle(t);"
+                    + "var bg=''+cs.backgroundImage;"
+                    + "var mask=''+(cs.webkitMaskImage||cs.maskImage||'');"
+                    + "if(bg&&bg.indexOf('none')<0)one+=' BG='+bg.slice(0,50);"
+                    + "if(mask&&mask.indexOf('none')<0)one+=' MASK='+mask.slice(0,50);"
+                    + "if(cs.fontFamily&&(''+cs.fontFamily).indexOf('sans-serif')<0)"
+                    + "one+=' FF='+((''+cs.fontFamily).slice(0,30));"
+                    + "}catch(e4){}"
+                    + "try{var bc=''+window.getComputedStyle(t,'::before').content;"
+                    + "if(bc&&bc!=='none')one+=' BC='+bc.slice(0,30);}catch(e6){}"
+                    + "d+='['+one+']';"
+                    + "}"
+                    + "try{d+=' imgs='+document.images.length;"
+                    + "d+=' svgs='+document.querySelectorAll('svg').length;"
+                    + "d+=' canvas='+document.querySelectorAll('canvas').length;"
+                    + "d+=' totalEls='+document.getElementsByTagName('*').length;}catch(e5){}"
+                    + "return '#none|'+d;"
+                    + "}catch(e){return '#none|err:'+e;}"
                     + "})()";
 
             java.lang.reflect.Method target = null;
@@ -133,8 +215,15 @@ public final class WebGrabber {
                             try {
                                 if (a != null && a.length > 0 && a[0] instanceof String) {
                                     String url = unquote((String) a[0]);
-                                    Util.log("js result=" + url);
-                                    cb.onResult(url);
+                                    if (url != null && url.startsWith("#none|")) {
+                                        // 探针结果：那一点到底是什么
+                                        Util.log("web probe: " + url);
+                                        cb.onResult(null);
+                                    } else {
+                                        Util.log("js result=" + (url == null ? "null"
+                                                : (url.length() > 90 ? url.substring(0, 90) + "..." : url)));
+                                        cb.onResult(url);
+                                    }
                                 } else {
                                     cb.onResult(null);
                                 }
@@ -162,7 +251,74 @@ public final class WebGrabber {
         if (v.length() == 0 || "null".equals(v) || "undefined".equals(v)) {
             return null;
         }
-        return v;
+        // evaluateJavascript 返回的是 JSON 字符串：换行/引号都是转义形式，
+        // 多行结果（#near| 列表）必须先解转义，否则整串会当成一个 URL。
+        return unescapeJson(v);
+    }
+
+    private static String unescapeJson(String v) {
+        if (v.indexOf('\\') < 0) {
+            return v;
+        }
+        StringBuilder sb = new StringBuilder(v.length());
+        for (int i = 0; i < v.length(); i++) {
+            char c = v.charAt(i);
+            if (c != '\\' || i + 1 >= v.length()) {
+                sb.append(c);
+                continue;
+            }
+            char n = v.charAt(++i);
+            switch (n) {
+                case 'n':
+                    sb.append('\n');
+                    break;
+                case 't':
+                    sb.append('\t');
+                    break;
+                case 'r':
+                    sb.append('\r');
+                    break;
+                case 'b':
+                    sb.append('\b');
+                    break;
+                case 'f':
+                    sb.append('\f');
+                    break;
+                case 'u':
+                    if (i + 4 < v.length()) {
+                        try {
+                            sb.append((char) Integer.parseInt(v.substring(i + 1, i + 5), 16));
+                            i += 4;
+                        } catch (Throwable ignore) {
+                            sb.append(n);
+                        }
+                    } else {
+                        sb.append(n);
+                    }
+                    break;
+                default:
+                    sb.append(n);   // \" \\ \/ 都退化成字符本身
+                    break;
+            }
+        }
+        return sb.toString();
+    }
+
+    /** 解析探针返回的 `#near|url\\nurl...` 候选列表。 */
+    public static ArrayList<String> parseList(String marker) {
+        ArrayList<String> out = new ArrayList<String>();
+        if (marker == null) {
+            return out;
+        }
+        String body = marker.startsWith("#near|") ? marker.substring(6) : marker;
+        String[] parts = body.split("\n");
+        for (int i = 0; i < parts.length; i++) {
+            String p = parts[i] == null ? "" : parts[i].trim();
+            if (p.length() > 8 && !out.contains(p)) {
+                out.add(p);
+            }
+        }
+        return out;
     }
 
     /** 把 WebView 当前视口渲染成位图（必须在主线程调用）。 */

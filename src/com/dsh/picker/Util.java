@@ -1,6 +1,9 @@
 package com.dsh.picker;
 
+import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
+import android.net.Uri;
 import android.os.Handler;
 import android.os.Looper;
 import android.widget.Toast;
@@ -121,12 +124,57 @@ public final class Util {
     }
 
     /**
+     * 唤起系统分享面板（Sharesheet）把刚保存的图发出去。
+     *
+     * 为什么走系统分享而不是剪贴板：Android 上绝大多数 App **不读**剪贴板里的图片
+     * （ClipboardManager 只负责「放」，接收方愿不愿意读是它自己的事），
+     * 而 ACTION_SEND + content:// 是各家都实现了的通用通道。
+     *
+     * 三个关键点：
+     *  1) 必须 setClipData()。只放 EXTRA_STREAM 时，FLAG_GRANT_READ_URI_PERMISSION
+     *     在部分 ROM 上不会随 chooser 传递，接收方拿到 uri 打不开。
+     *  2) 从 Activity 启动不要加 NEW_TASK（否则会另起任务栈，返回键行为异常）；
+     *     从 Application 启动必须加，否则直接被后台启动限制挡掉。
+     *  3) 必须在主线程 startActivity。
+     */
+    public static void shareImage(final Context ctx, final Uri uri, final String mime) {
+        if (ctx == null || uri == null) {
+            return;
+        }
+        final Context app = ctx.getApplicationContext() != null ? ctx.getApplicationContext() : ctx;
+        MAIN.post(new Runnable() {
+            @Override
+            public void run() {
+                try {
+                    Intent send = new Intent(Intent.ACTION_SEND);
+                    send.setType(mime == null || mime.length() == 0 ? "image/*" : mime);
+                    send.putExtra(Intent.EXTRA_STREAM, uri);
+                    send.setClipData(android.content.ClipData.newRawUri("image", uri));
+                    send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+
+                    Activity act = ActivityTracker.current();
+                    Context from = act != null ? act : app;
+                    Intent chooser = Intent.createChooser(send, "分享图片");
+                    if (!(from instanceof Activity)) {
+                        chooser.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    }
+                    from.startActivity(chooser);
+                    log("share sheet -> " + uri);
+                } catch (Throwable t) {
+                    log("share FAIL: " + t);
+                    toast(app, "已保存，但分享面板打不开");
+                }
+            }
+        });
+    }
+
+    /**
      * 把图片放进系统剪贴板。
      *
-     * 为什么用 MediaStore 的 content:// uri 而不是 FileProvider：
-     * 本模块的代码运行在**宿主进程**里，FileProvider 的 authority 必须由宿主自己在
-     * 清单里声明（它没有）；而 MediaStore 的 uri 是宿主插入图片时自己拿到的，
-     * 跨应用可读，直接塞进 ClipData 就能被微信/QQ 粘贴。
+     * 目前**不再走这条路**（改成系统分享面板了），代码留着是为了以后想加开关时
+     * 不用重写。为什么不能只靠它：宿主进程里没有 FileProvider 的 authority
+     * （authority 必须由宿主自己在清单里声明），所以只能借 MediaStore 的
+     * content:// uri —— 但接收方 App 普遍不读剪贴板图片，实际没什么用。
      */
     public static boolean copyToClipboard(android.content.Context ctx, android.net.Uri uri) {
         if (ctx == null || uri == null) {
