@@ -761,6 +761,21 @@ WPS 4 个、短信、邮件、蓝牙、打印、笔记、云盘……）。微�
 
 ---
 
+## 致谢 / Acknowledgements
+
+**协作方式**：本项目由 **Wanan** 主导 —— 需求判断、取舍决策、真机验证（Redmi K20 / vangogh，Android 12，
+Magisk + Vector）由他完成；具体代码由 AI 助手（对话式开发）编写。**版权与授权归属 Wanan**，
+AI 不作为著作权人（这也是为什么 `LICENSE` 里只署 Wanan）。
+
+**思路参考（未使用其中任何代码）**：
+
+- **PicCatcher / Evo-PicCatcher** —— 两个关键启发：`WebViewClient.onLoadResource` 能拿到页面加载过的
+  图片 URL；用 View 身份而非图像比对来定位「用户按的是哪一张」。
+- **vivo 超级拖放（`com.vivo.globaldragdrop`）** —— 展示了系统级拖放如何借全局输入流实现；
+  本模块反其道走进程内长按，只取自己需要的那一张。
+- **LSPosed / Vector** —— 运行框架与 `vector-cli`（作用域、模块启停）。
+- **Xposed API**（rovo89，Apache-2.0）—— `stub/` 下是按公开 API **签名自行编写的编译期桩**，
+  不含其实现代码。
 ## 许可 / License
 
 **GNU General Public License v3.0** —— 全文见 [LICENSE](LICENSE)。

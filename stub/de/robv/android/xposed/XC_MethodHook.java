@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: GPL-3.0-only
+// PointPic —— 长按取图 | Copyright (C) 2026 Wanan (dsh)
+// 完整许可条款见仓库根目录 LICENSE（GPL-3.0）。
 package de.robv.android.xposed;
 
 import java.lang.reflect.Member;
