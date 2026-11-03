@@ -767,12 +767,12 @@ WPS 4 个、短信、邮件、蓝牙、打印、笔记、云盘……）。微�
 
 **思路参考（未使用其中任何代码）**：
 
-- **PicCatcher / Evo-PicCatcher** —— 两个关键启发：`WebViewClient.onLoadResource` 能拿到页面加载过的
+- **PicCatcher(https://github.com/Mingyueyixi/PicCatcher) / Evo-PicCatcher(https://github.com/Evo-creative/Evo-PicCatcher)** —— 两个关键启发：`WebViewClient.onLoadResource` 能拿到页面加载过的
   图片 URL；用 View 身份而非图像比对来定位「用户按的是哪一张」。
 - **vivo 超级拖放（`com.vivo.globaldragdrop`）** —— 展示了系统级拖放如何借全局输入流实现；
   本模块反其道走进程内长按，只取自己需要的那一张。
-- **LSPosed / Vector** —— 运行框架与 `vector-cli`（作用域、模块启停）。
-- **Xposed API**（rovo89，Apache-2.0）—— `stub/` 下是按公开 API **签名自行编写的编译期桩**，
+- **LSPosed(https://github.com/LSPosed/LSPosed) / Vector(https://github.com/JingMatrix/Vector)** —— 运行框架与 `vector-cli`（作用域、模块启停）。
+- **Xposed API(https://github.com/rovo89/Xposed)**—— `stub/` 下是按公开 API **签名自行编写的编译期桩**，
   不含其实现代码。
 ## 许可 / License
 
