@@ -3,7 +3,7 @@
 **LSPosed / Vector（Zygisk）模块：长按任意界面里的图片或控件，把它存成一个图片文件。**
 只存你按下去的那一张 —— 不做后台全量抓取，不截屏，不裁剪。
 
-当前版本 **v1.9** ｜ 作者 **Wanan（dsh）** ｜ 许可 **MIT**
+当前版本 **v1.9** ｜ 作者 **Wanan（dsh）** ｜ 许可 **GPL-3.0**
 
 > 命名：仓库与安装包叫 **PointPic**，App 显示名仍是 **长按取图**。包名 `com.dsh.picker` 与日志前缀 `[PickPic]` 保持不变 —— 改包名会让用户已有的作用域配置全部失效，日志前缀则要和下文引用的历史日志一致。
 
@@ -136,7 +136,7 @@ picker/
 ├── AndroidManifest.xml          # xposedmodule 元数据 + 说明页 Activity
 ├── assets/xposed_init           # 入口类名
 ├── res/values/strings.xml
-├── LICENSE                      # MIT
+├── LICENSE                      # GPL-3.0
 ├── PointPic.apk                 # 构建产物（同时也是分发用的安装包）
 ├── stub/                        # 编译期桩（compileOnly，不进 APK）
 │   └── de/robv/android/xposed/{IXposedHookLoadPackage,XC_MethodHook,XposedHelpers,XposedBridge,callbacks/XC_LoadPackage}
@@ -763,11 +763,38 @@ WPS 4 个、短信、邮件、蓝牙、打印、笔记、云盘……）。微�
 
 ## 许可 / License
 
-MIT —— 见 [LICENSE](LICENSE)。
+**GNU General Public License v3.0** —— 全文见 [LICENSE](LICENSE)。
 
 ```
-Copyright (c) 2026 Wanan (dsh)
+PointPic — 长按取图
+Copyright (C) 2026 Wanan (dsh)
+
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, version 3 of the License.
+
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU General Public License for more details.
 ```
+
+### 这在实践里意味着什么
+
+| 你可以 | 你**不能** |
+|---|---|
+| 自己装、自己用、自己改，随便折腾 | 把代码（或改过的版本）**闭源**发布 |
+| 把改过的版本再发布，只要同样用 GPL-3.0 | 把它塞进闭源 App / 闭源商业产品里一起分发 |
+| 收钱分发（GPL 不禁止商业行为） | 收钱的同时不提供源码 |
+| 用它做二次开发，只要开源 | 附加额外限制（比如"禁止商用"）再分发 |
+
+一句话：**能商用，但不能闭源商用**。想拿它做闭源商业产品，就必须另外取得作者授权。
+
+> 为什么不用 MIT：MIT 允许别人拿走代码闭源商用，正好是你不想要的。
+> 也不用 CC BY-NC 那类"禁止商用"协议 —— 那些不是 OSI 认可的开源许可，和"开源"这个前提冲突。
+> GPL-3.0 是同时满足"开源"和"禁止闭源商用"的标准选择。
+
+### 关于第三方代码
 
 本仓库代码全部为本项目原创。`stub/` 下只有 Xposed API 的**方法签名声明**（编译期桩，不打进 APK），
 不含第三方实现。开发过程中参考过 PicCatcher / Evo-PicCatcher 的**思路**（hook 哪些点），
