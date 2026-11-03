@@ -18,7 +18,7 @@
             android:value="true" />
         <meta-data
             android:name="xposeddescription"
-            android:value="长按即取图：把指尖下的图片/控件存成图片文件并调起系统分享。记得先在作用域里勾选目标 App（推荐全选），勾完强停 App 再打开。作者 Wanan（dsh）" />
+            android:value="PointPic · 长按即取图：把指尖下的图片/控件存成图片文件并调起系统分享。记得先在作用域里勾选目标 App（推荐全选），勾完强停 App 再打开。作者 Wanan（dsh）" />
         <meta-data
             android:name="xposedminversion"
             android:value="93" />

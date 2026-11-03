@@ -60,7 +60,7 @@ $KEYTOOL = Join-Path $env:JAVA_HOME 'bin\keytool.exe'
 
 $OUT = Join-Path $ROOT "build"
 $KS = Join-Path $ROOT "keystore.jks"
-$APK = Join-Path $ROOT "PickPic.apk"
+$APK = Join-Path $ROOT "PointPic.apk"
 
 Write-Host "SDK : $SDK"
 Write-Host "BT  : $BT"
@@ -114,7 +114,7 @@ if ($LASTEXITCODE -ne 0) { throw "zipalign failed" }
 Write-Host "== 8. keystore ==" -ForegroundColor Cyan
 if (-not (Test-Path $KS)) {
     $ktlog = Join-Path $OUT "keytool.log"
-    cmd /c "`"$KEYTOOL`" -genkeypair -keystore `"$KS`" -alias pickpic -keyalg RSA -keysize 2048 -validity 36500 -storepass android -keypass android -dname `"CN=PickPic, O=Wanan (dsh), C=CN`" > `"$ktlog`" 2>&1"
+    cmd /c "`"$KEYTOOL`" -genkeypair -keystore `"$KS`" -alias pickpic -keyalg RSA -keysize 2048 -validity 36500 -storepass android -keypass android -dname `"CN=PointPic, O=Wanan (dsh), C=CN`" > `"$ktlog`" 2>&1"
     if (Test-Path $ktlog) { Get-Content $ktlog | Select-Object -Last 3 }
 }
 if (-not (Test-Path $KS)) { throw "keystore not created" }

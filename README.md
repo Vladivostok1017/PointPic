@@ -1,14 +1,16 @@
-# PickPic · 长按取图
+# PointPic · 长按取图
 
 **LSPosed / Vector（Zygisk）模块：长按任意界面里的图片或控件，把它存成一个图片文件。**
 只存你按下去的那一张 —— 不做后台全量抓取，不截屏，不裁剪。
 
 当前版本 **v1.9** ｜ 作者 **Wanan（dsh）** ｜ 许可 **MIT**
 
+> 命名：仓库与安装包叫 **PointPic**，App 显示名仍是 **长按取图**。包名 `com.dsh.picker` 与日志前缀 `[PickPic]` 保持不变 —— 改包名会让用户已有的作用域配置全部失效，日志前缀则要和下文引用的历史日志一致。
+
 ---
 ## 1. 安装与使用（三步）
 
-1. 安装 `PickPic.apk`，在 **Vector / LSPosed** 里启用模块
+1. 安装 `PointPic.apk`，在 **Vector / LSPosed** 里启用模块
 2. **作用域**：**推荐全选**；至少要勾上你想取图的那些 App
 3. 勾完 **强制停止目标 App 再打开**（或重启手机）—— 作用域只对**新启动的进程**生效，
    已经开着的 App 不重启不会生效，这是最容易漏的一步
@@ -135,7 +137,7 @@ picker/
 ├── assets/xposed_init           # 入口类名
 ├── res/values/strings.xml
 ├── LICENSE                      # MIT
-├── PickPic.apk                  # 构建产物（同时也是分发用的安装包）
+├── PointPic.apk                 # 构建产物（同时也是分发用的安装包）
 ├── stub/                        # 编译期桩（compileOnly，不进 APK）
 │   └── de/robv/android/xposed/{IXposedHookLoadPackage,XC_MethodHook,XposedHelpers,XposedBridge,callbacks/XC_LoadPackage}
 ├── src/com/dsh/picker/
@@ -160,7 +162,7 @@ picker/
 
 ```powershell
 pwsh .\build.ps1
-# 产物：仓库根目录的 PickPic.apk（自动签名、自动 zipalign）
+# 产物：仓库根目录的 PointPic.apk（自动签名、自动 zipalign）
 ```
 
 脚本会自动探测 SDK、最新的 `build-tools`、最新的 `platforms/android-*` 和 JDK，**不用改任何路径**；

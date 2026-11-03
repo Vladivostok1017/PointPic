@@ -42,7 +42,7 @@ public class MainActivity extends Activity {
         root.setPadding(dp(22), dp(28), dp(22), dp(36));
 
         // ── 标题 ──
-        TextView title = section("长按取图 · PickPic", 24, 0);
+        TextView title = section("长按取图 · PointPic", 24, 0);
         title.setGravity(Gravity.START);
         root.addView(title);
 
