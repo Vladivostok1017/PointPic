@@ -651,3 +651,42 @@ HyperOS 的「USB 调试（安全设置）」限制。用 root 装可绕开：
 adb push PointPic.apk /data/local/tmp/
 adb shell su -c "pm install -r -d /data/local/tmp/PointPic.apk"
 ```
+
+---
+
+## v1.11：去掉「太小就丢弃」的阈值，小头像能存了
+
+### 问题
+
+抖音评论区头像、聊天列表头像、状态点这类 32dp 左右的小图，长按完全没反应，只弹一句
+「这一处没有可保存的图片内容」。
+
+日志能直接看出是被自己挡掉的：
+
+```
+decide via=window point=97,967 hit=com.ss.android.ugc.aweme.base.ui.SmartAvatarImageView
+cand#0 SmartAvatarImageView rect=88x88@44,925 area=7744 bmp=88x88
+pick point=97,967 best=SmartAvatarImageView area=7744
+skip: 指尖下没有可确定的图片 (97,967)
+```
+
+图其实**已经拿到了**（`bmp=88x88`），倒在了 `worthSaving()`：
+原来要求 `面积 ≥ 10000 且最长边 ≥ 96`，而 88×88 = 7744、最长边 88，两条都不满足。
+
+这个阈值本意是挡 48×48 的加载转圈，代价是把「用户真正想存的小图」一起误杀了。
+
+### 改法
+
+- `worthSaving()` 只保留退化位图判定（`maxSide >= 2`），**不再按面积/边长筛小图**
+- 矢量重绘的候选下限从 `24×24` 降到 `8×8`，角标、状态点也能重绘出来
+
+理由：长按是**手动**行为。用户明确按了哪张，就该存哪张 —— 宁可偶尔存到一个转圈图，
+也不要在用户真想存头像时告诉他「没有可保存的图片」。
+
+### 实测
+
+| 场景 | v1.10 | v1.11 |
+|---|---|---|
+| 抖音评论区头像（88×88） | `skip` | 存盘成功 |
+| 聊天/列表头像（130×130） | 已可存 | 仍可存 |
+| 大图 / 网页原图 | 正常 | 不受影响 |

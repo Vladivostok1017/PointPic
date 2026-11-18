@@ -4,7 +4,7 @@
 
 LSPosed / Vector（Zygisk）模块 · Android 10+ · [GPL-3.0](LICENSE)
 
-当前版本 **v1.10** ｜ 变更记录见 [CHANGELOG.md](CHANGELOG.md)
+当前版本 **v1.11** ｜ 变更记录见 [CHANGELOG.md](CHANGELOG.md)
 
 > 命名：仓库与安装包叫 **PointPic**，App 显示名仍是 **长按取图**。包名 `com.dsh.picker` 与日志前缀 `[PickPic]` 保持不变——改包名会让已有作用域配置全部失效，日志前缀则要和 CHANGELOG 里引用的历史日志一致。
 
@@ -140,7 +140,7 @@ Release 正文由 `generate_release_notes` 根据提交自动生成。
 ## 已知限制
 
 - 完全自绘、不经过标准 View 绘制流程的界面取不到内容
-- 32dp 左右的小头像可能被「太小」阈值过滤掉
+- ~~32dp 左右的小头像被「太小」阈值过滤~~（v1.11 起已取消该阈值）
 - 分享面板里有哪些目标，取决于系统里装了什么 App
 - 模块只在被勾选作用域的 App 内生效
 

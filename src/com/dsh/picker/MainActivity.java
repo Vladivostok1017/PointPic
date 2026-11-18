@@ -97,7 +97,7 @@ public class MainActivity extends Activity {
 
         // ── 作者 ──
         root.addView(section("作者：Wanan（dsh）", 15, 30));
-        root.addView(section("版本 1.10", 13, 6));
+        root.addView(section("版本 1.11", 13, 6));
 
         ScrollView sv = new ScrollView(this);
         sv.addView(root);

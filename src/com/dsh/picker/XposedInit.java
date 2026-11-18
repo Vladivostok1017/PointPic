@@ -1022,8 +1022,9 @@ public class XposedInit implements IXposedHookLoadPackage {
             if (area <= 0) {
                 continue;
             }
-            // 太小（几个像素）和太大（几乎整屏的容器）都排除
-            if (area < 24 * 24) {
+            // 只排除「几个像素」这种退化控件和几乎整屏的容器。
+            // v1.11 起下限从 24×24 降到 8×8：小图标（角标、状态点）也要能重绘出来。
+            if (area < 8 * 8) {
                 continue;
             }
             if (screenArea > 0 && area > screenArea * 4 / 10) {
@@ -1186,8 +1187,13 @@ public class XposedInit implements IXposedHookLoadPackage {
     }
 
     /**
-     * 值不值得存：用「面积 + 最长边」判定，而不是最短边。
-     * 这样既挡掉 48×48 的加载转圈/小图标，又不会误杀「又长又细」的横幅图。
+     * 值不值得存。
+     *
+     * v1.11 起**去掉了「太小就丢弃」的阈值**（原来是 area ≥ 10000 且最长边 ≥ 96）。
+     * 那个阈值本意是挡 48×48 的加载转圈，代价是把评论区头像（32dp ≈ 88px）
+     * 这类真正想要的图一起误杀了 —— 长按是手动行为，用户按了什么就应该存什么。
+     *
+     * 现在只挡退化位图（1×1 之类），其余一律放行。
      */
     private static boolean worthSaving(Bitmap b) {
         if (b == null || b.isRecycled()) {
@@ -1198,9 +1204,7 @@ public class XposedInit implements IXposedHookLoadPackage {
         if (w <= 0 || h <= 0) {
             return false;
         }
-        long area = (long) w * h;
-        int maxSide = Math.max(w, h);
-        return area >= 10000L && maxSide >= 96;
+        return Math.max(w, h) >= 2;
     }
 
     private static View topMost(View v) {
