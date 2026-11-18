@@ -145,28 +145,66 @@ public class XposedInit implements IXposedHookLoadPackage {
             if (SELF.equals(lpparam.packageName)) {
                 return;
             }
-            XposedHelpers.findAndHookMethod(Application.class, "onCreate", new XC_MethodHook() {
-                @Override
-                protected void afterHookedMethod(MethodHookParam param) {
-                    try {
-                        init((Context) param.thisObject, lpparam);
-                    } catch (Throwable t) {
-                        Util.log("init err: " + t);
-                    }
-                }
-            });
+
+            // 关键：hook 必须在这里**立刻**装好，绝不能等 Application.onCreate 才装。
+            //
+            // 反例就是微信：它整个启动链路压在 attachBaseContext/onCreate 里，实测
+            // 「Loading legacy module」和 Application 建完发生在同一毫秒，
+            // 等 Application.onCreate 的回调到来时，那个回调早就过去了 ——
+            // 表现是作用域里明明有微信，模块却在微信里一声不响（连 init 日志都没有）。
+            // 抖音这类 Application 建得晚的 App 反而看不出问题，所以这个坑藏了很久。
+            installHooks(lpparam);
+
+            // 下面这个 hook 现在只为了拿一个 Application Context 做兜底
+            // （toast / 弹候选面板）。拿不到也不影响功能：绝大多数路径用的是 View.getContext()。
+            try {
+                XposedHelpers.findAndHookMethod(Application.class, "onCreate",
+                        new XC_MethodHook() {
+                            @Override
+                            protected void afterHookedMethod(MethodHookParam param) {
+                                try {
+                                    captureAppContext((Context) param.thisObject);
+                                } catch (Throwable ignore) {
+                                }
+                            }
+                        });
+            } catch (Throwable t) {
+                Util.log("hook Application.onCreate FAIL: " + t);
+            }
         } catch (Throwable t) {
             Util.log("handleLoadPackage err: " + t);
         }
     }
 
-    private static synchronized void init(Context ctx, XC_LoadPackage.LoadPackageParam lp) {
-        if (inited || ctx == null) {
+    private static void captureAppContext(Context ctx) {
+        if (appContext == null && ctx != null) {
+            appContext = ctx.getApplicationContext() != null ? ctx.getApplicationContext() : ctx;
+        }
+    }
+
+    /** 懒取 Context：Application.onCreate 没赶上时，用 AndroidAppHelper 兜一下。 */
+    private static Context appCtx() {
+        if (appContext != null) {
+            return appContext;
+        }
+        try {
+            Class<?> h = Class.forName("de.robv.android.xposed.AndroidAppHelper");
+            Object o = h.getMethod("currentApplication").invoke(null);
+            if (o instanceof Context) {
+                appContext = (Context) o;
+            }
+        } catch (Throwable ignore) {
+        }
+        return appContext;
+    }
+
+    private static synchronized void installHooks(XC_LoadPackage.LoadPackageParam lp) {
+        if (inited) {
             return;
         }
         inited = true;
-        appContext = ctx;
-        Util.log("init in " + lp.packageName);
+        appContext = appCtx();
+        Util.log("install hooks in " + lp.packageName);
 
         hookTouch();
         hookImageView();
@@ -178,7 +216,7 @@ public class XposedInit implements IXposedHookLoadPackage {
         // 放在最后：它一旦成功，上面 hookTouch/hookLongClickFallback 就自动让位
         installWindowInputHook(lp.classLoader);
 
-        Util.log("init done for " + lp.packageName);
+        Util.log("install done for " + lp.packageName);
     }
 
     // ---------- 1. 触摸 + 自实现长按判定 ----------
@@ -478,7 +516,11 @@ public class XposedInit implements IXposedHookLoadPackage {
                 @Override
                 protected void afterHookedMethod(MethodHookParam param) {
                     try {
-                        ActivityTracker.onResume((Activity) param.thisObject);
+                        Activity act = (Activity) param.thisObject;
+                        ActivityTracker.onResume(act);
+                        // Activity 起来的时候一定有 Context —— 这是最靠谱的一次兜底补抓，
+                        // 因为 Application.onCreate 有可能比模块加载还早（微信就是这样）。
+                        captureAppContext(act);
                     } catch (Throwable ignore) {
                     }
                 }
@@ -777,7 +819,7 @@ public class XposedInit implements IXposedHookLoadPackage {
             Util.log("findWebView: " + t);
         }
         if (web != null) {
-            final Context wctx = web.getContext() != null ? web.getContext() : appContext;
+            final Context wctx = web.getContext() != null ? web.getContext() : appCtx();
             final View webView = web;
             // 先试 getHitTestResult（快，且不用等 JS）
             String imgUrl = WebGrabber.imageUrlAt(web);
@@ -866,7 +908,7 @@ public class XposedInit implements IXposedHookLoadPackage {
             }
         }
         Util.log("skip: 指尖下没有可确定的图片 (" + (int) sx + "," + (int) sy + ")");
-        Util.toast(appContext, "这一处没有可保存的图片内容");
+        Util.toast(appCtx(), "这一处没有可保存的图片内容");
     }
 
     /** 由 performLongClick 触发 —— 仅在「定时器路径没有处理过这次手势」时兜底。 */
@@ -1020,7 +1062,7 @@ public class XposedInit implements IXposedHookLoadPackage {
     }
 
     private static void doSave(View v, Bitmap bmp, String from) {
-        Context ctx = v != null && v.getContext() != null ? v.getContext() : appContext;
+        Context ctx = v != null && v.getContext() != null ? v.getContext() : appCtx();
         if (ctx == null) {
             return;
         }
@@ -1051,7 +1093,7 @@ public class XposedInit implements IXposedHookLoadPackage {
                 Util.log("vector-redraw blank: " + small.getClass().getName());
             }
             Util.log("web: 无 URL 可下，且重绘无内容");
-            Context ctx = anchor != null ? anchor.getContext() : appContext;
+            Context ctx = anchor != null ? anchor.getContext() : appCtx();
             Util.toast(ctx, "这一处没有可保存的图片内容");
         } catch (Throwable t) {
             Util.log("snapshotFallback: " + t);

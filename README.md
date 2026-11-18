@@ -2,7 +2,7 @@
 
 **LSPosed / Vector（Zygisk）模块：长按任意界面里的图片或控件，把它存成一个图片文件。**
 
-当前版本 **v1.9** ｜许可 **GPL-3.0**
+当前版本 **v1.10** ｜许可 **GPL-3.0**
 
 > 命名：仓库与安装包叫 **PointPic**，App 显示名仍是 **长按取图**。包名 `com.dsh.picker` 与日志前缀 `[PickPic]` 保持不变 —— 改包名会让用户已有的作用域配置全部失效，日志前缀则要和下文引用的历史日志一致。
 
@@ -760,6 +760,81 @@ WPS 4 个、短信、邮件、蓝牙、打印、笔记、云盘……）。微�
 
 ---
 
+---
+
+## v1.10：修「作用域里加了微信，但微信里完全没反应」
+
+### 现象
+
+微信装得上、跑得起来、不崩，但长按什么都不发生，日志里连一行 `[PickPic]` 都没有。
+
+### 证据链
+
+| 观察点 | 事实 |
+|---|---|
+| Vector 日志 | `Loading legacy module com.dsh.picker` + `Loading class com.dsh.picker.XposedInit`，微信主进程也有 → **模块被加载了** |
+| 我们自己的日志 | 微信进程（uid 10315）**一条都没有**；抖音同版本正常打出 `init in com.ss.android.ugc.aweme` + 5 条 hook 日志 |
+| 崩溃缓冲 | `logcat -b crash` 对 `com.tencent.mm` 为空；进程存活、`mCurrentFocus=...ui.LauncherUI` → **不是闪退，是没生效** |
+
+### 根因：hook 装得太晚
+
+原来所有 hook 都挂在 `Application.onCreate` 的 **after** 回调里 —— 先等 Application 起来，再装钩子。
+微信把整个启动链路压在 `attachBaseContext`/`onCreate` 里，模块加载和 Application 建完在**同一毫秒**：
+
+```
+00:48:29.496  Loading Vector/Xposed for com.tencent.mm
+00:48:29.500  Loading legacy module com.dsh.picker
+00:48:29.501    Loading class com.dsh.picker.XposedInit
+```
+
+等我们去挂 `Application.onCreate` 时，那次回调早过去了 → 钩子永远不触发 → `installHooks()` 一次都没跑。
+抖音的 Application 建得晚，所以这个问题在抖音上一直没暴露，藏了很久。
+
+### 修法
+
+**hook 安装移到 `handleLoadPackage` 里立刻执行**，不再依赖任何 App 生命周期：
+
+```java
+public void handleLoadPackage(XC_LoadPackage.LoadPackageParam lpparam) {
+    installHooks(lpparam);              // ← 立刻装，不等 Application
+
+    // Application.onCreate 只剩一个用途：捡个兜底 Context
+    findAndHookMethod(Application.class, "onCreate", ... captureAppContext(...));
+}
+```
+
+Context 改成三级兜底，任何一级拿到就够用：
+
+1. `Application.onCreate` 回调（正常 App）
+2. `Activity.onResume`（微信这种 Application 早于模块加载的，靠这个补）
+3. `AndroidAppHelper.currentApplication()` 懒取（前两个都错过时）
+
+绝大多数代码路径用的是 `View.getContext()`，`appContext` 只是 toast / 弹面板时的兜底，拿不到也不影响抓图。
+
+### 实测（Redmi K80 / Android 16 / Vector 2.2）
+
+```
+00:51:44  [PickPic] install hooks in com.tencent.mm
+00:51:44  [PickPic] install done for com.tencent.mm      ← 两个进程都装上了
+00:52:02  [PickPic] SAVE 130x130 from ConversationFolderItemView@540,1200
+00:52:02  [PickPic] saved uri=content://media/external/images/media/1000042918 share=true
+00:52:02  [PickPic] share sheet -> content://media/...
+```
+
+微信里长按已经能出图并弹分享面板。
+
+### 顺带记一笔：这个机型 `adb install` 会被拦
+
+```
+Failure [INSTALL_FAILED_USER_RESTRICTED: Install canceled by user]
+```
+
+HyperOS 的「USB 调试（安全设置）」限制。用 root 装可绕开：
+
+```bash
+adb push PointPic.apk /data/local/tmp/
+adb shell su -c "pm install -r -d /data/local/tmp/PointPic.apk"
+```
 ## 致谢 / Acknowledgements
 
 本项目由 **Wanan** 主导 —— **版权与授权归属 Wanan**，
