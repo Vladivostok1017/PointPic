@@ -26,25 +26,51 @@ jobs:
           distribution: temurin
           java-version: '21'
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
-
-      - name: Install build-tools and platform
+      # windows-latest 镜像自带 Android SDK（ANDROID_HOME=C:\Android\android-sdk）。
+      # 这里不引第三方 action，只做「找一下 / 缺什么补什么」，避免 action 版本变动把发布卡死。
+      - name: Locate Android SDK
         shell: pwsh
         run: |
-          sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
-          if ($LASTEXITCODE -ne 0) { throw "sdkmanager 安装失败" }
+          $cands = @($env:ANDROID_HOME, $env:ANDROID_SDK_ROOT, 'C:\Android\android-sdk',
+                     (Join-Path $env:LOCALAPPDATA 'Android\Sdk'))
+          $sdk = $null
+          foreach ($c in $cands) {
+            if ($c -and (Test-Path $c)) { $sdk = $c; break }
+          }
+          if (-not $sdk) { throw "runner 上找不到 Android SDK" }
+          Write-Host "ANDROID_HOME=$sdk"
+          "ANDROID_HOME=$sdk"        | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          "ANDROID_SDK_ROOT=$sdk"    | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: Install build-tools / platform if missing
+        shell: pwsh
+        run: |
+          $sdk = $env:ANDROID_HOME
+          $mgr = Get-ChildItem (Join-Path $sdk 'cmdline-tools') -Recurse -Filter 'sdkmanager.bat' -ErrorAction SilentlyContinue |
+                 Select-Object -First 1
+          $need = @()
+          if (-not (Get-ChildItem (Join-Path $sdk 'platforms') -Directory -ErrorAction SilentlyContinue)) {
+            $need += 'platforms;android-35'
+          }
+          if (-not (Get-ChildItem (Join-Path $sdk 'build-tools') -Directory -ErrorAction SilentlyContinue)) {
+            $need += 'build-tools;35.0.0'
+          }
+          if ($need.Count -eq 0) { Write-Host 'build-tools 与 platform 已就绪，跳过安装'; exit 0 }
+          if (-not $mgr) { throw "缺少 $($need -join ', ')，且找不到 sdkmanager.bat" }
+          Write-Host "安装: $($need -join ', ')"
+          & $mgr.FullName --sdk_root=$sdk --install @need
+          if ($LASTEXITCODE -ne 0) { throw 'sdkmanager 安装失败' }
 
       - name: Check tag matches AndroidManifest versionName
         shell: pwsh
         run: |
           if ("${{ github.ref_type }}" -ne 'tag') {
-            Write-Host "非 tag 触发，跳过版本校验"
+            Write-Host '非 tag 触发，跳过版本校验'
             exit 0
           }
           $tag = "${{ github.ref_name }}"
           $raw = Get-Content AndroidManifest.xml -Raw
-          if ($raw -notmatch 'android:versionName="([^"]+)"') { throw "解析 versionName 失败" }
+          if ($raw -notmatch 'android:versionName="([^"]+)"') { throw '解析 versionName 失败' }
           $v = $Matches[1]
           Write-Host "tag=$tag manifest=$v"
           if ($tag -ne "v$v") {
@@ -57,10 +83,10 @@ jobs:
           KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
         run: |
           if ([string]::IsNullOrWhiteSpace($env:KEYSTORE_B64)) {
-            Write-Host "::warning::仓库没有配置 KEYSTORE_B64，将生成一次性签名密钥。这样产出的 APK 与官方包签名不一致，用户覆盖安装会失败。"
+            Write-Host '::warning::仓库没有配置 KEYSTORE_B64，将生成一次性签名密钥。这样产出的 APK 与官方包签名不一致，用户覆盖安装会失败。'
           } else {
             [IO.File]::WriteAllBytes("$PWD\keystore.jks", [Convert]::FromBase64String($env:KEYSTORE_B64))
-            Write-Host "已从 KEYSTORE_B64 恢复签名密钥"
+            Write-Host '已从 KEYSTORE_B64 恢复签名密钥'
           }
 
       - name: Build APK
