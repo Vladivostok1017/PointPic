@@ -4,7 +4,7 @@
 
 LSPosed / Vector（Zygisk）模块 · Android 10+ · [GPL-3.0](LICENSE)
 
-当前版本 **v1.11** ｜ 变更记录见 [CHANGELOG.md](CHANGELOG.md)
+当前版本 **v1.15** ｜ 变更记录见 [CHANGELOG.md](CHANGELOG.md)
 
 > 命名：仓库与安装包叫 **PointPic**，App 显示名仍是 **长按取图**。包名 `com.dsh.picker` 与日志前缀 `[PickPic]` 保持不变——改包名会让已有作用域配置全部失效，日志前缀则要和 CHANGELOG 里引用的历史日志一致。
 

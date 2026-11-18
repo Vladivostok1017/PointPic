@@ -690,3 +690,51 @@ skip: 指尖下没有可确定的图片 (97,967)
 | 抖音评论区头像（88×88） | `skip` | 存盘成功 |
 | 聊天/列表头像（130×130） | 已可存 | 仍可存 |
 | 大图 / 网页原图 | 正常 | 不受影响 |
+
+---
+
+## v1.15：图标按钮也能取了（遍历与重绘兜底的四个修复）
+
+### 问题
+
+抖音右列那些点赞/评论/收藏/分享按钮，长按完全抓不到，日志只有一句 `skip`：
+
+```
+decide via=window point=981,1209 hit=android.widget.FrameLayout
+pick point=981,1209 best=null	area=-1
+skip: 指尖下没有可确定的图片 (981,1209)
+```
+
+### 三个真实原因（都是自己的代码挡的）
+
+| # | 原因 | 后果 |
+|---|---|---|
+| 1 | `smallestViewAt()` 里「ViewGroup 子 View > 3 就跳过」 | 那排按钮的容器子 View 都超过 3 个，整列被排除 |
+| 2 | `collectAllAt()` 深度上限 24、收集上限 32 | 抖音 View 树 30+ 层，最深层（最小的控件）根本进不了候选 |
+| 3 | `imageOf()` 用 `drawableToBitmap()` 时没给兜底尺寸 | 图标多是 Lottie / AnimationDrawable，没有固有尺寸，退化成 1×1 空壳 |
+
+外加一条逻辑缺口：重绘兜底只试「命中 View」和「最小 View」两个候选，一旦这两个画出来是空的（命中层常常是透明触摸层）就直接放弃。
+
+### 改法
+
+- 删掉 `childCount > 3` 过滤（面积闸门已经够用）
+- `collectAllAt` 上限 24→48 层、32→200 项
+- `Util.drawableToBitmap(d, fallbackW, fallbackH)` 新增重载，`imageOf()` 传控件宽高
+- 重绘兜底改成**候选列表**：命中 View → 最小 View → 其余包含按点的控件按面积升序，最多 12 个，第一个画出非空内容的胜出
+- 加了一条硬闸门：候选面积 > 350×350 一律不重绘。没有它，候选选错时会把整页 `RTViewPager` 重绘成 3240×6651 交上去（实测踩过，等于变相整屏截屏）
+
+### 实测（Redmi K80 / Android 16 / 抖音）
+
+```
+redraw-skip(too big) #0 FrameLayout 1080x2355
+vector-redraw com.ss.android.ugc.aweme.base.ui.AnimationImageView -> 201x201
+SAVE 201x201 from vector-redraw(3x)
+```
+
+头像上的「关注 +」角标成功存成 **201×201 带透明通道的 PNG**，是重绘结果，不是屏幕截图。
+
+### 仍然取不到的情况
+
+图标如果完全由容器 `onDraw` 画出来（该坐标上没有任何小 View），重绘只能得到整屏，
+而按指尖裁一块又会带上视频画面 —— 等同于截图裁剪，本模块不做，直接给提示。
+实测抖音评论按钮（981,1390）就是这种，日志会打一串 `redraw-skip(too big)` 后 `skip`。

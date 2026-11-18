@@ -896,17 +896,72 @@ public class XposedInit implements IXposedHookLoadPackage {
             return;
         }
 
-        // ---- ③ 不是 WebView 也没有缓存位图：矢量重绘 ----
-        View small = smallestViewAt(root, sx, sy);
-        if (small != null) {
-            Bitmap redraw = renderViewScaled(small, 3);
+        // ---- ③ 不是 WebView、也没有可读位图：重绘 ----
+        //
+        // 抖音点赞/评论这类按钮是自绘的，图标不落在 ImageView 的位图里，
+        // 唯一能拿到内容的方式就是把它重画一遍。但「命中哪个 View」不等于「谁画了图标」：
+        // 指到的那层常常是个透明触摸层，重绘出来是全空。
+        // 所以这里准备一串候选，从小到大逐个试，第一个画出非空内容的胜出。
+        ArrayList<View> tries = new ArrayList<View>(12);
+        if (hit != null && hit != root) {
+            tries.add(hit);
+        }
+        View sv = smallestViewAt(root, sx, sy);
+        if (sv != null && !tries.contains(sv)) {
+            tries.add(sv);
+        }
+        ArrayList<View> all = new ArrayList<View>(16);
+        collectAllAt(topMost(root), sx, sy, all, 0);
+        while (tries.size() < 12) {
+            View pick = null;
+            long pickArea = Long.MAX_VALUE;
+            for (int i = 0; i < all.size(); i++) {
+                View v = all.get(i);
+                if (tries.contains(v)) {
+                    continue;
+                }
+                Rect r = new Rect();
+                if (!v.getGlobalVisibleRect(r)) {
+                    continue;
+                }
+                long a = (long) r.width() * r.height();
+                if (a <= 0) {
+                    continue;
+                }
+                if (a < pickArea) {
+                    pickArea = a;
+                    pick = v;
+                }
+            }
+            if (pick == null) {
+                break;
+            }
+            tries.add(pick);
+        }
+        for (int i = 0; i < tries.size(); i++) {
+            View v = tries.get(i);
+            // 只接受「小控件」的重绘结果。没有这条闸门，深树里一旦候选选错，
+            // 会把整页 ViewPager 重绘成 3240x6651 交上去 —— 那就是变相整屏截屏。
+            Rect vr = new Rect();
+            if (!v.getGlobalVisibleRect(vr)) {
+                continue;
+            }
+            if ((long) vr.width() * vr.height() > 350L * 350L) {
+                Util.log("redraw-skip(too big) #" + i + " " + v.getClass().getSimpleName()
+                        + " " + vr.width() + "x" + vr.height());
+                continue;
+            }
+            Bitmap redraw = renderViewScaled(v, 3);
             if (worthSaving(redraw)) {
-                Util.log("vector-redraw " + small.getClass().getName()
+                Util.log("vector-redraw " + v.getClass().getName()
                         + " -> " + redraw.getWidth() + "x" + redraw.getHeight());
-                doSave(small, redraw, "vector-redraw(3x)");
+                doSave(v, redraw, "vector-redraw(3x)");
                 return;
             }
+            Util.log("redraw-blank #" + i + " " + v.getClass().getSimpleName()
+                    + (redraw == null ? " (null)" : " " + redraw.getWidth() + "x" + redraw.getHeight()));
         }
+
         Util.log("skip: 指尖下没有可确定的图片 (" + (int) sx + "," + (int) sy + ")");
         Util.toast(appCtx(), "这一处没有可保存的图片内容");
     }
@@ -946,18 +1001,6 @@ public class XposedInit implements IXposedHookLoadPackage {
         decide(v, sx, sy, v, "fallback");
     }
 
-    // ---------- 矢量重绘通道：解决「图标/矢量图形没有图片文件」 ----------
-
-    /**
-     * 把某个控件**重绘**到一张放大后的 Bitmap。
-     *
-     * 和"截图裁剪"的本质区别：
-     *  - 截图：取屏幕像素，受屏幕分辨率限制，控件形状不规则就废；
-     *  - 重绘：让控件在任意尺寸的画布上重新绘制一次，矢量图形可以超采样，
-     *    得到比屏幕更清晰的图（Path/文字/渐变都不会糊）。
-     *
-     * 必须在主线程调用（触摸回调里天然满足）。
-     */
     private static Bitmap renderViewScaled(View v, int scale) {
         if (v == null || scale < 1) {
             return null;
@@ -1030,9 +1073,9 @@ public class XposedInit implements IXposedHookLoadPackage {
             if (screenArea > 0 && area > screenArea * 4 / 10) {
                 continue;
             }
-            if (v instanceof ViewGroup && ((ViewGroup) v).getChildCount() > 3) {
-                continue;   // 复杂容器重绘没意义
-            }
+            // 注：原来这里还有「ViewGroup 子 View > 3 就跳过」的过滤，已删 ——
+            // 实测它把抖音右列那排自绘按钮全挡在门外（容器子 View 都超过 3 个）。
+
             if (area < bestArea) {
                 bestArea = area;
                 best = v;
@@ -1043,7 +1086,7 @@ public class XposedInit implements IXposedHookLoadPackage {
 
     private static void collectAllAt(View v, float sx, float sy,
                                      ArrayList<View> out, int depth) {
-        if (v == null || depth > 24 || out.size() > 24) {
+        if (v == null || depth > 48 || out.size() > 200) {
             return;
         }
         if (v.getVisibility() != View.VISIBLE) {
@@ -1250,7 +1293,10 @@ public class XposedInit implements IXposedHookLoadPackage {
         if (!(v instanceof ImageView)) {
             return null;
         }
-        Bitmap b = Util.drawableToBitmap(((ImageView) v).getDrawable());
+        // 传入控件自身的宽高做兜底：Lottie / AnimatedVector 这类图标没有固有尺寸，
+        // 不用控件尺寸就只会得到一个 1×1 的空壳。
+        Bitmap b = Util.drawableToBitmap(((ImageView) v).getDrawable(),
+                v.getWidth(), v.getHeight());
         if (valid(b)) {
             return b;
         }

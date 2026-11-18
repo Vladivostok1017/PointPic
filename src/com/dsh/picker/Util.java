@@ -89,6 +89,18 @@ public final class Util {
 
     /** 任意 Drawable 转 Bitmap；能取到 BitmapDrawable 就取原对象，避免重绘损失。 */
     public static android.graphics.Bitmap drawableToBitmap(android.graphics.drawable.Drawable d) {
+        return drawableToBitmap(d, 0, 0);
+    }
+
+    /**
+     * 同上，但允许在 Drawable 自己没有固有尺寸时，用「宿主控件的宽高」兜底。
+     *
+     * 为什么需要：抖音点赞/评论这类图标用的是 Lottie / AnimatedVectorDrawable，
+     * 它们的 getIntrinsicWidth() 常常返回 -1、getBounds() 也可能还是 0，
+     * 老代码会退化成 1×1 的垃圾位图（等于拿不到）。改成用控件的实际尺寸渲染当前帧。
+     */
+    public static android.graphics.Bitmap drawableToBitmap(android.graphics.drawable.Drawable d,
+                                                            int fallbackW, int fallbackH) {
         if (d == null) {
             return null;
         }
@@ -102,8 +114,12 @@ public final class Util {
             int w = d.getIntrinsicWidth();
             int h = d.getIntrinsicHeight();
             if (w <= 0 || h <= 0) {
-                w = Math.max(1, d.getBounds().width());
-                h = Math.max(1, d.getBounds().height());
+                w = d.getBounds().width();
+                h = d.getBounds().height();
+            }
+            if ((w <= 0 || h <= 0) && fallbackW > 0 && fallbackH > 0) {
+                w = fallbackW;
+                h = fallbackH;
             }
             if (w <= 0 || h <= 0) {
                 return null;
