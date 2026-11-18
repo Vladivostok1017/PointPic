@@ -1,0 +1,84 @@
+name: release
+
+# push 一个 v* 标签就自动构建 + 发 Release。
+# Release 由 GitHub 自动注入的 GITHUB_TOKEN 创建，不需要任何 PAT。
+on:
+  push:
+    tags: ['v*']
+  # 手动触发：只构建、不发布（用于验证 workflow 本身没问题）
+  workflow_dispatch:
+
+permissions:
+  # 上传 Release 附件需要写 contents
+  contents: write
+
+jobs:
+  build-and-release:
+    # build.ps1 用的是 d8.bat / apksigner.bat（Windows batch），所以跑 windows runner
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install build-tools and platform
+        shell: pwsh
+        run: |
+          sdkmanager --install "platforms;android-35" "build-tools;35.0.0"
+          if ($LASTEXITCODE -ne 0) { throw "sdkmanager 安装失败" }
+
+      - name: Check tag matches AndroidManifest versionName
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -ne 'tag') {
+            Write-Host "非 tag 触发，跳过版本校验"
+            exit 0
+          }
+          $tag = "${{ github.ref_name }}"
+          $raw = Get-Content AndroidManifest.xml -Raw
+          if ($raw -notmatch 'android:versionName="([^"]+)"') { throw "解析 versionName 失败" }
+          $v = $Matches[1]
+          Write-Host "tag=$tag manifest=$v"
+          if ($tag -ne "v$v") {
+            throw "标签 $tag 与 AndroidManifest 里的 versionName=$v 不一致。先改版本号再打标签。"
+          }
+
+      - name: Restore signing key
+        shell: pwsh
+        env:
+          KEYSTORE_B64: ${{ secrets.KEYSTORE_B64 }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:KEYSTORE_B64)) {
+            Write-Host "::warning::仓库没有配置 KEYSTORE_B64，将生成一次性签名密钥。这样产出的 APK 与官方包签名不一致，用户覆盖安装会失败。"
+          } else {
+            [IO.File]::WriteAllBytes("$PWD\keystore.jks", [Convert]::FromBase64String($env:KEYSTORE_B64))
+            Write-Host "已从 KEYSTORE_B64 恢复签名密钥"
+          }
+
+      - name: Build APK
+        shell: pwsh
+        run: ./build.ps1
+
+      - name: Upload APK as workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: PointPic-apk
+          path: PointPic.apk
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: PointPic.apk
+          name: PointPic ${{ github.ref_name }}
+          generate_release_notes: true
+          fail_on_unmatched_files: true

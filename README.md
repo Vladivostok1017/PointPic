@@ -111,6 +111,32 @@ pwsh .\build.ps1
 首次构建会在本地生成 `keystore.jks`（口令 `android`），已被 `.gitignore` 排除。
 换机器 / 换 keystore 生成的签名不同，覆盖安装会失败，先卸载旧版再装。
 
+## 发布
+
+推一个 `v*` 标签就会自动出包并发 Release，不需要本地打包、也不需要任何 token：
+
+```bash
+git tag v1.11
+git push origin v1.11
+```
+
+`.github/workflows/release.yml` 会在 windows runner 上跑 `build.ps1`，用 GitHub 自动注入的
+`GITHUB_TOKEN` 创建 Release 并把 `PointPic.apk` 作为附件上传（`contents: write` 权限）。
+Release 正文由 `generate_release_notes` 根据提交自动生成。
+
+两个前置约定：
+
+- **标签必须和 `AndroidManifest.xml` 的 `versionName` 一致**（`v1.10` ↔ `1.10`），
+  不一致时 workflow 会直接失败，避免发出「标签写着 A、包里装着 B」的版本。
+- **签名要一致**，否则用户无法覆盖安装。在仓库 Settings → Secrets 里加一个 `KEYSTORE_B64`：
+
+  ```bash
+  # 本地执行，产出单行 base64
+  base64 -w0 keystore.jks      # macOS: base64 -i keystore.jks
+  ```
+
+  没有配置这个 secret 时 workflow 仍能出包，但会打一条警告：用的是临时生成的密钥，
+  与官方包签名不同，用户需要先卸载再装。
 ## 已知限制
 
 - 完全自绘、不经过标准 View 绘制流程的界面取不到内容
