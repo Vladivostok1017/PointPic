@@ -100,11 +100,35 @@ jobs:
           path: PointPic.apk
           if-no-files-found: error
 
+      - name: Compose release body from CHANGELOG.md
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $v = $tag -replace '^v', ''
+          $lines = Get-Content CHANGELOG.md
+          $start = -1
+          $pat = '^## v' + [regex]::Escape($v)
+          for ($i = 0; $i -lt $lines.Count; $i++) {
+            if ($lines[$i] -match $pat) { $start = $i; break }
+          }
+          $out = @()
+          if ($start -ge 0) {
+            for ($i = $start; $i -lt $lines.Count; $i++) {
+              if ($i -gt $start -and $lines[$i] -match '^## v') { break }
+              $out += $lines[$i]
+            }
+            Write-Host "从 CHANGELOG.md 取到 $v 的更新记录（$($out.Count) 行）"
+          } else {
+            $out = @("$v 没有单独的更新记录，详见 [CHANGELOG.md](CHANGELOG.md)。")
+            Write-Host "CHANGELOG.md 里没有 $v 的小节，用占位正文"
+          }
+          Set-Content -Path release-body.md -Value $out -Encoding utf8
       - name: Create GitHub Release
         if: github.ref_type == 'tag'
         uses: softprops/action-gh-release@v2
         with:
           files: PointPic.apk
           name: PointPic ${{ github.ref_name }}
-          generate_release_notes: true
+          body_path: release-body.md
           fail_on_unmatched_files: true
